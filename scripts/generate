@@ -118,7 +118,7 @@ for c in "${clusters[@]}"; do
       for m in "${mixins[@]+"${mixins[@]}"}"; do
         echo "- ../../mixins/$m"
       done
-      echo "- ../../../../clusters/$c"
+      echo "- ../../../../clusters/$c/facts"
     } >"$out/kustomization.yaml"
     APP=$app CLUSTER=$c OVERLAY=$overlay \
     MIXINS=$(APP=$app yq -o=json -I=0 '.[strenv(APP)].mixins // []' "$work/$c.json") \

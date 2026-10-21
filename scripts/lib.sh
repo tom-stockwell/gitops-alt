@@ -99,3 +99,33 @@ resolve_sync() {
     * (select(fi==2).apps[strenv(APP)].sync // {})' \
     "$defaults" "$pfile" "$ROOT/clusters/$c/apps.yaml"
 }
+
+# env_keys <file>: keys of a KEY=value file (kustomize envs format), in order.
+env_keys() {
+  awk '$0 !~ /^[[:space:]]*(#|$)/ { sub(/=.*/, ""); print }' "$1"
+}
+
+# env_get <file> <key>: value of <key> in a KEY=value file; empty if unset.
+env_get() {
+  awk -v k="$2" '$0 !~ /^[[:space:]]*(#|$)/ { i = index($0, "="); if (substr($0, 1, i - 1) == k) v = substr($0, i + 1) }
+                 END { printf "%s", v }' "$1"
+}
+
+# appset_names: ApplicationSet names, from the default revisions file.
+appset_names() {
+  env_keys "$ROOT/bootstrap/appsets/revisions.env"
+}
+
+# appset_revision <cluster> <appset>: the revision the cluster runs for that ApplicationSet
+# (its clusters/<cluster>/argocd/revisions.env, else the default).
+appset_revision() {
+  local v=""
+  [[ -f $ROOT/clusters/$1/argocd/revisions.env ]] && v=$(env_get "$ROOT/clusters/$1/argocd/revisions.env" "$2")
+  [[ -n $v ]] || v=$(env_get "$ROOT/bootstrap/appsets/revisions.env" "$2")
+  echo "$v"
+}
+
+# commit_has_cluster <sha> <cluster>: true if the commit has generated joins for the cluster.
+commit_has_cluster() {
+  git -C "$ROOT" ls-tree -d -r --name-only "$1" -- apps 2>/dev/null | grep -qE "^apps/[^/]+/clusters/$2\$"
+}

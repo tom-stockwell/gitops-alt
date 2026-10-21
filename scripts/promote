@@ -1,0 +1,57 @@
+#!/usr/bin/env bash
+# Pin a cluster's ApplicationSet to a commit.
+set -euo pipefail
+SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+# shellcheck source=lib.sh
+source "$SCRIPT_DIR/lib.sh"
+
+usage() {
+  cat <<USAGE
+Usage: scripts/promote <cluster> <ref> [--appset <name>]
+
+Resolves <ref> to a full commit SHA and writes it for <name> (default: cluster-config)
+in clusters/<cluster>/argocd/revisions.env. Commit and open an MR; the cluster moves
+once it merges to main. Promote one cluster per MR for a staged rollout; roll back by
+promoting the previous SHA.
+USAGE
+}
+
+cluster="" ref="" appset=cluster-config
+while [[ $# -gt 0 ]]; do
+  case $1 in
+    -h|--help) usage; exit 0 ;;
+    --appset) [[ $# -ge 2 ]] || die "--appset needs a value"; appset=$2; shift 2 ;;
+    -*) die "unknown option: $1" ;;
+    *)
+      if [[ -z $cluster ]]; then cluster=$1
+      elif [[ -z $ref ]]; then ref=$1
+      else die "unexpected argument: $1"
+      fi
+      shift ;;
+  esac
+done
+[[ -n $cluster && -n $ref ]] || { usage >&2; exit 1; }
+
+require_tools git
+ROOT=$(repo_root)
+env=$ROOT/clusters/$cluster/argocd/revisions.env
+[[ -d $ROOT/clusters/$cluster ]] || die "unknown cluster: $cluster"
+[[ -f $env ]] || die "clusters/$cluster/argocd/revisions.env not found"
+appset_names | grep -qxF "$appset" || die "unknown ApplicationSet '$appset' (not in bootstrap/appsets/revisions.env)"
+sha=$(git -C "$ROOT" rev-parse --verify -q "$ref^{commit}") || die "unknown ref: $ref"
+if [[ $appset == cluster-config ]]; then
+  commit_has_cluster "$sha" "$cluster" || die "$ref ($sha) has no apps/*/clusters/$cluster/; pin a commit that includes this cluster"
+fi
+if ! git -C "$ROOT" merge-base --is-ancestor "$sha" "$(git -C "$ROOT" rev-parse -q --verify origin/main || echo HEAD)" 2>/dev/null; then
+  warn "$sha is not on main yet; the cluster can only fetch it once it's pushed"
+fi
+
+old=$(env_get "$env" "$appset")
+tmp=$(mktemp)
+cleanup_add "$tmp"
+awk -v k="$appset" -v v="$sha" '
+  $0 !~ /^[[:space:]]*(#|$)/ && substr($0, 1, index($0, "=") - 1) == k { print k "=" v; done = 1; next }
+  { print }
+  END { if (!done) print k "=" v }' "$env" >"$tmp"
+cat "$tmp" >"$env"
+echo "$cluster: $appset ${old:-main (default)} -> $sha"

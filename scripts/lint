@@ -20,7 +20,7 @@ case ${1:-} in
   *) die "unexpected argument: $1" ;;
 esac
 
-require_tools yq
+require_tools kustomize yq
 ROOT=$(repo_root)
 cd "$ROOT"
 
@@ -40,27 +40,62 @@ for k in apps/*/clusters/*/kustomization.yaml; do
   [[ -z $extra ]] || err "$k: joins may only contain apiVersion/kind/resources/components, found: $(echo $extra)"
   [[ $(yq '.resources | length' "$k") == 1 && $(yq -r '.resources[0]' "$k") =~ ^\.\./\.\./overlays/[^/]+$ ]] \
     || err "$k: resources must be exactly one ../../overlays/<overlay>"
-  [[ $(yq -r '.components[-1] // ""' "$k") == "../../../../clusters/$c" ]] \
-    || err "$k: last component must be ../../../../clusters/$c"
+  [[ $(yq -r '.components[-1] // ""' "$k") == "../../../../clusters/$c/facts" ]] \
+    || err "$k: last component must be ../../../../clusters/$c/facts"
 done
 
 # Cluster dirs.
-canonical=""
+declare -A canonical=()
+is_git=false
+git rev-parse --git-dir >/dev/null 2>&1 && is_git=true
+mapfile -t appsets < <(appset_names)
 for c in "${clusters[@]}"; do
   d=clusters/$c
-  for f in kustomization.yaml facts.yaml apps.yaml; do
+  for f in apps.yaml facts/kustomization.yaml facts/facts.yaml argocd/kustomization.yaml argocd/revisions.env; do
     [[ -f $d/$f ]] || err "$d: missing $f"
   done
-  if [[ -f $d/facts.yaml ]]; then
-    [[ $(yq -r '.data.name // ""' "$d/facts.yaml") == "$c" ]] || err "$d/facts.yaml: data.name must be '$c'"
-    [[ $(yq -r '.metadata.annotations["config.kubernetes.io/local-config"] // ""' "$d/facts.yaml") == "true" ]] \
-      || err "$d/facts.yaml: missing annotation config.kubernetes.io/local-config: \"true\""
+  if [[ -f $d/facts/facts.yaml ]]; then
+    [[ $(yq -r '.data.name // ""' "$d/facts/facts.yaml") == "$c" ]] || err "$d/facts/facts.yaml: data.name must be '$c'"
+    [[ $(yq -r '.metadata.annotations["config.kubernetes.io/local-config"] // ""' "$d/facts/facts.yaml") == "true" ]] \
+      || err "$d/facts/facts.yaml: missing annotation config.kubernetes.io/local-config: \"true\""
   fi
-  if [[ -f $d/kustomization.yaml ]]; then
-    if [[ -z $canonical ]]; then
-      canonical=$d/kustomization.yaml
-    elif ! cmp -s "$canonical" "$d/kustomization.yaml"; then
-      err "$d/kustomization.yaml: differs from $canonical (cluster kustomizations must be identical)"
+  # facts/ and argocd/ kustomizations must be identical across clusters.
+  for f in facts/kustomization.yaml argocd/kustomization.yaml; do
+    [[ -f $d/$f ]] || continue
+    if [[ -z ${canonical[$f]:-} ]]; then
+      canonical[$f]=$d/$f
+    elif ! cmp -s "${canonical[$f]}" "$d/$f"; then
+      err "$d/$f: differs from ${canonical[$f]} (must be identical for every cluster)"
+    fi
+  done
+  # Pins: known ApplicationSets, a full SHA or main, and (for cluster-config) a commit with this cluster.
+  env=$d/argocd/revisions.env
+  if [[ -f $env ]]; then
+    dups=$(env_keys "$env" | sort | uniq -d)
+    [[ -z $dups ]] || err "$env: duplicate keys: $(echo $dups)"
+    while IFS= read -r key; do
+      val=$(env_get "$env" "$key")
+      printf '%s\n' "${appsets[@]}" | grep -qxF "$key" \
+        || { err "$env: unknown ApplicationSet '$key' (not in bootstrap/appsets/revisions.env)"; continue; }
+      if [[ $val == main ]]; then
+        continue
+      elif [[ ! $val =~ ^[0-9a-f]{40}$ ]]; then
+        err "$env: $key must be a full 40-character commit SHA or main, got '$val'"
+      elif $is_git; then
+        if ! git cat-file -e "$val^{commit}" 2>/dev/null; then
+          err "$env: $key: commit $val not found (fetch it, or pin a commit on main)"
+        elif [[ $key == cluster-config ]] && ! commit_has_cluster "$val" "$c"; then
+          err "$env: $key: commit $val has no apps/*/clusters/$c/"
+        fi
+      fi
+    done < <(env_keys "$env")
+  fi
+  # The rendered ApplicationSets must have every placeholder filled.
+  if [[ -f $d/argocd/kustomization.yaml ]]; then
+    if ! out=$(kustomize build "$d/argocd" 2>&1); then
+      err "$d/argocd: kustomize build failed: $(echo "$out" | head -n1)"
+    elif grep -qE '\b(REVISION|CLUSTER)\b' <<<"$out"; then
+      err "$d/argocd: rendered ApplicationSets still contain REVISION/CLUSTER placeholders"
     fi
   fi
 done

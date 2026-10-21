@@ -1,0 +1,43 @@
+#!/usr/bin/env bash
+# Print the root Application that bootstraps a cluster.
+set -euo pipefail
+SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+# shellcheck source=lib.sh
+source "$SCRIPT_DIR/lib.sh"
+
+usage() {
+  cat <<USAGE
+Usage: scripts/bootstrap-root <name>
+
+Prints the root Application for clusters/<name>. It tracks main at
+clusters/<name>/argocd/, which holds the cluster's ApplicationSets with their pinned
+revisions. Apply with: scripts/bootstrap-root <name> | oc apply -f -
+USAGE
+}
+
+case ${1:-} in -h|--help) usage; exit 0 ;; esac
+[[ $# -eq 1 ]] || { usage >&2; exit 1; }
+name=$1
+
+ROOT=$(repo_root)
+[[ -d $ROOT/clusters/$name/argocd ]] || die "unknown cluster: $name (no clusters/$name/argocd/)"
+
+cat <<APP
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: root
+  namespace: openshift-gitops
+spec:
+  project: default
+  source:
+    repoURL: https://git.example.com/platform/gitops.git
+    targetRevision: main
+    path: clusters/$name/argocd
+  destination:
+    server: https://kubernetes.default.svc
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+APP

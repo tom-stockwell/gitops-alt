@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Acceptance tests T1–T15. Mutating tests run in temp copies of the repo.
+# Acceptance tests T1–T16. Mutating tests run in temp copies of the repo.
 set -euo pipefail
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")/../scripts" && pwd)
 # shellcheck source=../scripts/lib.sh
@@ -148,10 +148,11 @@ grep -q "logging.*apps/logging/mixins/nope" "$LOG" || fail "error doesn't name a
 t T11 "new-cluster"
 d=$(copy_repo)
 expect_ok "new-cluster" "$d/scripts/new-cluster" prod-west-1 --from prod-east-1 --domain apps.west1.example.com
-expect_eq "facts name" "prod-west-1" "$(yq -r .data.name "$d/clusters/prod-west-1/facts.yaml")"
-expect_eq "facts domain" "apps.west1.example.com" "$(yq -r .data.domain "$d/clusters/prod-west-1/facts.yaml")"
+expect_eq "facts name" "prod-west-1" "$(yq -r .data.name "$d/clusters/prod-west-1/facts/facts.yaml")"
+expect_eq "facts domain" "apps.west1.example.com" "$(yq -r .data.domain "$d/clusters/prod-west-1/facts/facts.yaml")"
 expect_eq "apps.yaml" "extends: prod" "$(cat "$d/clusters/prod-west-1/apps.yaml")"
 expect_eq "joins" "cert-manager logging monitoring" "$(joins_for "$d" prod-west-1)"
+expect_eq "no pins copied" "" "$(env_keys "$d/clusters/prod-west-1/argocd/revisions.env")"
 expect_ok "render" "$d/scripts/render" logging prod-west-1
 expect_eq "route host" "logging.apps.west1.example.com" "$(kind_field "$LOG" Route .spec.host)"
 expect_ok "lint" "$d/scripts/lint"
@@ -169,21 +170,22 @@ expect_ok "diff HEAD" "$d/scripts/diff" HEAD
 [[ -f $d/rendered/manifests.diff && ! -s $d/rendered/manifests.diff ]] || fail "rendered/manifests.diff missing or non-empty"
 [[ $(git -C "$d" worktree list | wc -l) -eq 1 ]] || fail "worktree not cleaned up"
 
-t T14 "bootstrap-secret"
-expect_ok "bootstrap-secret" "$S/bootstrap-secret" prod-east-2 --wave 0
-expect_eq "name" "prod-east-2" "$(yq -r .stringData.name "$LOG")"
-expect_eq "wave label" '"0"' "$(yq -o=json '.metadata.labels.wave' "$LOG")"
-expect_eq "local label" '"true"' "$(yq -o=json '.metadata.labels["gitops.example.com/local"]' "$LOG")"
-expect_fail "unknown cluster" "$S/bootstrap-secret" nope
+t T14 "bootstrap-root"
+expect_ok "bootstrap-root" "$S/bootstrap-root" prod-east-2
+expect_eq "kind" "Application" "$(yq -r .kind "$LOG")"
+expect_eq "path" "clusters/prod-east-2/argocd" "$(yq -r .spec.source.path "$LOG")"
+expect_eq "tracks main" "main" "$(yq -r .spec.source.targetRevision "$LOG")"
+expect_fail "unknown cluster" "$S/bootstrap-root" nope
 
-t T15 "applicationset"
-a=$ROOT/bootstrap/applicationset.yaml
-expect_ok "parses" yq -e . "$a"
-expect_eq "cluster selector" "true" \
-  "$(yq -r '.spec.generators[0].matrix.generators[0].clusters.selector.matchLabels["gitops.example.com/local"]' "$a")"
-# The destination comes from the local cluster Secret, whose server is the in-cluster API.
-expect_eq "destination" "{{ .server }}" "$(yq -r .spec.template.spec.destination.server "$a")"
-expect_eq "local secret server" "https://kubernetes.default.svc" "$("$S/bootstrap-secret" prod-east-1 | yq -r .stringData.server)"
+t T15 "cluster ApplicationSets"
+a=$OUT/appsets-east1.yaml
+expect_ok "kustomize build clusters/prod-east-1/argocd" kustomize build "$ROOT/clusters/prod-east-1/argocd"
+cp "$LOG" "$a"
+expect_eq "kinds" "ApplicationSet" "$(yq -r .kind "$a" | grep -v '^---$' | sort -u | paste -sd' ' -)"
+expect_eq "generator revision (default)" "main" "$(yq -r '.spec.generators[0].git.revision' "$a")"
+expect_eq "targetRevision (default)" "main" "$(yq -r .spec.template.spec.source.targetRevision "$a")"
+expect_eq "generator path" "apps/*/clusters/prod-east-1/argocd.json" "$(yq -r '.spec.generators[0].git.files[0].path' "$a")"
+expect_eq "destination" "https://kubernetes.default.svc" "$(yq -r .spec.template.spec.destination.server "$a")"
 # Render templatePatch for a params file as the Go template would: dig returns the value if the
 # key exists (even false), else the default true.
 render_patch() { # <params-json>
@@ -203,6 +205,33 @@ expect_eq "templatePatch syncPolicy" '{"enabled":false,"prune":true,"selfHeal":t
   "$(render_patch "$ROOT/apps/logging/clusters/prod-east-2/argocd.json")"
 echo '{"sync":{"automated":{"prune":false}}}' >"$OUT/partial.json"
 expect_eq "templatePatch defaults" '{"enabled":true,"prune":false,"selfHeal":true}' "$(render_patch "$OUT/partial.json")"
+
+t T16 "revision pins"
+d=$(copy_repo)
+sha=$(git -C "$d" rev-parse HEAD)
+expect_ok "promote prod-east-1" "$d/scripts/promote" prod-east-1 HEAD
+expect_eq "revisions.env" "$sha" "$(env_get "$d/clusters/prod-east-1/argocd/revisions.env" cluster-config)"
+expect_ok "build prod-east-1" kustomize build "$d/clusters/prod-east-1/argocd"
+expect_eq "pinned generator revision" "$sha" "$(yq -r '.spec.generators[0].git.revision' "$LOG")"
+expect_eq "pinned targetRevision" "$sha" "$(yq -r .spec.template.spec.source.targetRevision "$LOG")"
+expect_ok "build prod-east-2" kustomize build "$d/clusters/prod-east-2/argocd"
+expect_eq "other cluster unchanged" "main" "$(yq -r '.spec.generators[0].git.revision' "$LOG")"
+expect_ok "promote again" "$d/scripts/promote" prod-east-1 HEAD
+expect_eq "no duplicate key" "cluster-config" "$(env_keys "$d/clusters/prod-east-1/argocd/revisions.env")"
+expect_ok "lint" "$d/scripts/lint"
+expect_ok "whatruns" "$d/scripts/whatruns" prod-east-1
+grep -q "cluster-config @ ${sha:0:12}" "$LOG" || fail "whatruns doesn't show the pin: $(head -n1 "$LOG")"
+expect_fail "unknown appset" "$d/scripts/promote" prod-east-1 HEAD --appset nope
+expect_fail "unknown ref" "$d/scripts/promote" prod-east-1 nope
+expect_ok "new-cluster" "$d/scripts/new-cluster" prod-west-1 --from prod-east-1
+expect_fail "pin a commit without the cluster" "$d/scripts/promote" prod-west-1 HEAD
+env=$d/clusters/prod-east-2/argocd/revisions.env
+cp "$env" "$OUT/env.bak"
+for bad in "cluster-config=abc123" "cluster-config=$sha " "nope=$sha" "cluster-config=$(printf 'f%.0s' {1..40})"; do
+  { cat "$OUT/env.bak"; echo "$bad"; } >"$env"
+  expect_fail "lint rejects '$bad'" "$d/scripts/lint"
+done
+cp "$OUT/env.bak" "$env"
 
 echo
 if [[ $failures -gt 0 ]]; then

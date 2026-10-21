@@ -4,4 +4,4 @@ kind: Kustomization
 resources:
 - ../../overlays/prod
 components:
-- ../../../../clusters/prod-east-2
+- ../../../../clusters/prod-east-2/facts

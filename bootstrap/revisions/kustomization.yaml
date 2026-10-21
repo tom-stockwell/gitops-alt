@@ -1,0 +1,23 @@
+# Fills each ApplicationSet's placeholders from the appset-revisions ConfigMap (one key per
+# ApplicationSet) and the cluster facts. Used by every clusters/<cluster>/argocd/.
+#
+# Adding an ApplicationSet <name>:
+#   1. bootstrap/appsets/<name>.yaml with REVISION (and CLUSTER where needed) placeholders,
+#      listed in bootstrap/appsets/kustomization.yaml;
+#   2. `<name>=main` in bootstrap/appsets/revisions.env;
+#   3. a replacement block below, selecting the ApplicationSet by name.
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+replacements:
+# cluster-config
+- source: {kind: ConfigMap, name: appset-revisions, fieldPath: data.cluster-config}
+  targets:
+  - select: {kind: ApplicationSet, name: cluster-config}
+    fieldPaths:
+    - spec.generators.0.git.revision
+    - spec.template.spec.source.targetRevision
+- source: {kind: ConfigMap, name: cluster-facts, fieldPath: data.name}
+  targets:
+  - select: {kind: ApplicationSet, name: cluster-config}
+    fieldPaths: [spec.generators.0.git.files.0.path]
+    options: {delimiter: "/", index: 3}          # apps/*/clusters/CLUSTER/argocd.json

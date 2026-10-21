@@ -5,4 +5,4 @@ resources:
 - ../../overlays/prod
 components:
 - ../../mixins/ha
-- ../../../../clusters/prod-east-1
+- ../../../../clusters/prod-east-1/facts

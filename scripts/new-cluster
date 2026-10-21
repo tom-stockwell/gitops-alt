@@ -10,8 +10,8 @@ usage() {
 Usage: scripts/new-cluster <name> --from <existing> [--domain <domain>]
 
 Copies clusters/<existing> to clusters/<name>, sets the facts name (and domain),
-resets apps.yaml to extend the same profile with no overrides, generates its joins
-and shows what will run there.
+resets apps.yaml to extend the same profile with no overrides and its revisions.env
+to no pins (tracks main), generates its joins and shows what will run there.
 USAGE
 }
 
@@ -35,10 +35,12 @@ ROOT=$(repo_root)
 
 profile=$(yq '.extends // ""' "$ROOT/clusters/$from/apps.yaml")
 cp -R "$ROOT/clusters/$from" "$ROOT/clusters/$name"
-NAME=$name yq -i '.data.name = strenv(NAME)' "$ROOT/clusters/$name/facts.yaml"
+NAME=$name yq -i '.data.name = strenv(NAME)' "$ROOT/clusters/$name/facts/facts.yaml"
 if [[ -n $domain ]]; then
-  DOMAIN=$domain yq -i '.data.domain = strenv(DOMAIN)' "$ROOT/clusters/$name/facts.yaml"
+  DOMAIN=$domain yq -i '.data.domain = strenv(DOMAIN)' "$ROOT/clusters/$name/facts/facts.yaml"
 fi
+# Pins don't carry over: the source's pinned commits don't contain this cluster yet.
+grep -E '^[[:space:]]*(#|$)' "$ROOT/clusters/$from/argocd/revisions.env" >"$ROOT/clusters/$name/argocd/revisions.env" || true
 if [[ -n $profile ]]; then
   echo "extends: $profile" >"$ROOT/clusters/$name/apps.yaml"
 else

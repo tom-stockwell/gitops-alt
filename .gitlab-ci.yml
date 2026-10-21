@@ -15,7 +15,6 @@ variables:
 stages:
   - check
   - diff
-  - promote
 
 check:
   stage: check
@@ -38,33 +37,3 @@ render-diff:
     paths:
       - rendered/manifests.diff
     when: always
-
-# Promotion = force-moving the wave-N tag to this commit. Clusters bootstrapped with
-# wave N (see bootstrap/README.md) follow tag wave-N.
-.promote:
-  stage: promote
-  script:
-    - git tag -f "wave-${WAVE}" "$CI_COMMIT_SHA"
-    - git push -f "https://gitops-ci:${GITOPS_PUSH_TOKEN}@${CI_SERVER_HOST}/${CI_PROJECT_PATH}.git" "refs/tags/wave-${WAVE}"
-
-promote-wave-0:
-  extends: .promote
-  variables: {WAVE: "0"}
-  rules:
-    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
-
-promote-wave-1:
-  extends: .promote
-  variables: {WAVE: "1"}
-  needs: [promote-wave-0]
-  rules:
-    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
-      when: manual
-
-promote-wave-2:
-  extends: .promote
-  variables: {WAVE: "2"}
-  needs: [promote-wave-1]
-  rules:
-    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
-      when: manual

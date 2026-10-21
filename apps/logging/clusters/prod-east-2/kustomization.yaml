@@ -5,4 +5,4 @@ resources:
 - ../../overlays/prod
 components:
 - ../../mixins/canary
-- ../../../../clusters/prod-east-2
+- ../../../../clusters/prod-east-2/facts

@@ -10,7 +10,9 @@ usage() {
 Usage: scripts/whatruns [cluster...]
 
 Prints APP OVERLAY MIXINS AUTO-SYNC PRUNE SELF-HEAL WAVE per cluster (default: all clusters),
-from the generated argocd.json files, sorted by wave then app.
+sorted by wave then app. Reads the generated argocd.json files at the commit the cluster's
+cluster-config ApplicationSet is pinned to; clusters tracking main are read from the
+working tree.
 USAGE
 }
 
@@ -34,12 +36,24 @@ for c in "${clusters[@]}"; do
   [[ -d $ROOT/clusters/$c ]] || die "unknown cluster: $c"
   $first || echo
   first=false
-  echo "$c"
+  rev=$(appset_revision "$c" cluster-config)
+  if [[ $rev == main ]]; then
+    echo "$c  (cluster-config @ main; showing working tree)"
+  else
+    git -C "$ROOT" cat-file -e "$rev^{commit}" 2>/dev/null || die "$c: pinned commit $rev not found locally; fetch it"
+    echo "$c  (cluster-config @ ${rev:0:12})"
+  fi
   {
     printf 'APP\tOVERLAY\tMIXINS\tAUTO-SYNC\tPRUNE\tSELF-HEAL\tWAVE\n'
-    for f in "$ROOT"/apps/*/clusters/"$c"/argocd.json; do
-      [[ -f $f ]] || continue
-      yq -p=json -o=yaml -r '[.app, .overlay, (.mixins | join(",")), .sync.automated.enabled, .sync.automated.prune, .sync.automated.selfHeal, .sync.wave] | @tsv' "$f" \
+    if [[ $rev == main ]]; then
+      for f in "$ROOT"/apps/*/clusters/"$c"/argocd.json; do
+        [[ -f $f ]] && cat "$f"
+      done
+    else
+      git -C "$ROOT" ls-tree -r --name-only "$rev" -- apps | grep -E "^apps/[^/]+/clusters/$c/argocd.json\$" \
+        | while read -r f; do git -C "$ROOT" show "$rev:$f"; done
+    fi | while IFS= read -r json; do
+      yq -p=json -o=yaml -r '[.app, .overlay, (.mixins | join(",")), .sync.automated.enabled, .sync.automated.prune, .sync.automated.selfHeal, .sync.wave] | @tsv' <<<"$json" \
         | awk -F'\t' -v OFS='\t' '$3 == "" { $3 = "-" } 1'
     done | LC_ALL=C sort -t$'\t' -k7,7n -k1,1
   } | awk -F'\t' '
