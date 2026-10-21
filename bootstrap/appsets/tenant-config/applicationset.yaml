@@ -1,0 +1,43 @@
+# Tenant config: one Application per tenants/<tenant>/clusters/<cluster>/argocd.json.
+#
+# REVISION and CLUSTER are placeholders, filled in by bootstrap/revisions from the cluster's
+# appset-revisions ConfigMap (key tenant-config) and cluster-facts. Pinned and promoted
+# separately from cluster-config: scripts/promote <cluster> <ref> --appset tenant-config.
+# tenants/ stands in for a separate tenants repo; point repoURL there if it moves out.
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: tenant-config
+  namespace: openshift-gitops
+spec:
+  goTemplate: true
+  goTemplateOptions: ["missingkey=error"]
+  generators:
+  - git:
+      repoURL: https://git.example.com/platform/gitops.git
+      revision: REVISION
+      files:
+      - path: tenants/*/clusters/CLUSTER/argocd.json
+  template:
+    metadata:
+      name: 'tenant-{{.tenant}}'
+      annotations:
+        argocd.argoproj.io/sync-wave: '{{.sync.wave}}'
+    spec:
+      project: default
+      source:
+        repoURL: https://git.example.com/platform/gitops.git
+        targetRevision: REVISION
+        path: '{{.path.path}}'
+      destination:
+        server: https://kubernetes.default.svc
+
+  # templatePatch so the values render as booleans, not strings. `dig` falls back to true
+  # only when a key is missing; unlike `default`, it keeps an explicit false.
+  templatePatch: |
+    spec:
+      syncPolicy:
+        automated:
+          enabled: {{ dig "sync" "automated" "enabled" true . }}
+          prune: {{ dig "sync" "automated" "prune" true . }}
+          selfHeal: {{ dig "sync" "automated" "selfHeal" true . }}

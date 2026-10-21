@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Acceptance tests T1–T16. Mutating tests run in temp copies of the repo.
+# Acceptance tests T1–T17. Mutating tests run in temp copies of the repo.
 set -euo pipefail
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")/../scripts" && pwd)
 # shellcheck source=../scripts/lib.sh
@@ -186,6 +186,14 @@ expect_eq "generator revision (default)" "main" "$(yq -r '.spec.generators[0].gi
 expect_eq "targetRevision (default)" "main" "$(yq -r .spec.template.spec.source.targetRevision "$a")"
 expect_eq "generator path" "apps/*/clusters/prod-east-1/argocd.json" "$(yq -r '.spec.generators[0].git.files[0].path' "$a")"
 expect_eq "destination" "https://kubernetes.default.svc" "$(yq -r .spec.template.spec.destination.server "$a")"
+expect_ok "kustomize build clusters/prod-east-2/argocd" kustomize build "$ROOT/clusters/prod-east-2/argocd"
+cp "$LOG" "$OUT/appsets-east2.yaml"
+expect_eq "prod-east-2 ApplicationSets" "cluster-config tenant-config" \
+  "$(yq -r 'select(.kind == "ApplicationSet") | .metadata.name' "$OUT/appsets-east2.yaml" | grep -v '^---$' | sort | paste -sd' ' -)"
+expect_eq "tenant generator path" "tenants/*/clusters/prod-east-2/argocd.json" \
+  "$(yq -r 'select(.metadata.name == "tenant-config") | .spec.generators[0].git.files[0].path' "$OUT/appsets-east2.yaml")"
+expect_eq "tenant revision (default)" "main main" \
+  "$(yq -r 'select(.metadata.name == "tenant-config") | [.spec.generators[0].git.revision, .spec.template.spec.source.targetRevision] | join(" ")' "$OUT/appsets-east2.yaml" | grep -v -e '^---$' -e '^$')"
 # Render templatePatch for a params file as the Go template would: dig returns the value if the
 # key exists (even false), else the default true.
 render_patch() { # <params-json>
@@ -215,7 +223,14 @@ expect_ok "build prod-east-1" kustomize build "$d/clusters/prod-east-1/argocd"
 expect_eq "pinned generator revision" "$sha" "$(yq -r '.spec.generators[0].git.revision' "$LOG")"
 expect_eq "pinned targetRevision" "$sha" "$(yq -r .spec.template.spec.source.targetRevision "$LOG")"
 expect_ok "build prod-east-2" kustomize build "$d/clusters/prod-east-2/argocd"
-expect_eq "other cluster unchanged" "main" "$(yq -r '.spec.generators[0].git.revision' "$LOG")"
+expect_eq "other cluster unchanged" "main" "$(yq -r 'select(.metadata.name == "cluster-config") | .spec.generators[0].git.revision' "$LOG")"
+expect_ok "promote tenant-config on prod-east-2" "$d/scripts/promote" prod-east-2 HEAD --appset tenant-config
+expect_ok "build prod-east-2" kustomize build "$d/clusters/prod-east-2/argocd"
+expect_eq "tenant-config pinned" "$sha" "$(yq -r 'select(.metadata.name == "tenant-config") | .spec.template.spec.source.targetRevision' "$LOG")"
+expect_eq "cluster-config still main" "main" "$(yq -r 'select(.metadata.name == "cluster-config") | .spec.template.spec.source.targetRevision' "$LOG")"
+expect_ok "whatruns prod-east-2" "$d/scripts/whatruns" prod-east-2
+grep -q "tenants (tenant-config @ ${sha:0:12}): team-a, team-b" "$LOG" || fail "whatruns doesn't list pinned tenants: $(tail -n1 "$LOG")"
+expect_fail "promote an appset outside the base" "$d/scripts/promote" prod-east-1 HEAD --appset tenant-config
 expect_ok "promote again" "$d/scripts/promote" prod-east-1 HEAD
 expect_eq "no duplicate key" "cluster-config" "$(env_keys "$d/clusters/prod-east-1/argocd/revisions.env")"
 expect_ok "lint" "$d/scripts/lint"
@@ -232,6 +247,23 @@ for bad in "cluster-config=abc123" "cluster-config=$sha " "nope=$sha" "cluster-c
   expect_fail "lint rejects '$bad'" "$d/scripts/lint"
 done
 cp "$OUT/env.bak" "$env"
+echo "tenant-config=$sha" >>"$d/clusters/prod-east-1/argocd/revisions.env"
+expect_fail "lint rejects a pin outside the base" "$d/scripts/lint"
+
+t T17 "tenants"
+expect_ok "render team-a on prod-east-2" kustomize build "$ROOT/tenants/team-a/clusters/prod-east-2"
+expect_eq "team-a quota override" "16" "$(kind_field "$LOG" ResourceQuota '.spec.hard["requests.cpu"]')"
+expect_ok "render team-b on prod-east-2" kustomize build "$ROOT/tenants/team-b/clusters/prod-east-2"
+expect_eq "team-b quota" "4" "$(kind_field "$LOG" ResourceQuota '.spec.hard["requests.cpu"]')"
+expect_ok "render-all" "$S/render-all" "$OUT/rendered"
+[[ -s $OUT/rendered/prod-east-2/tenant-team-a.yaml && -s $OUT/rendered/prod-east-2/tenant-team-a.argocd.json ]] \
+  || fail "render-all didn't render tenants"
+d=$(copy_repo)
+echo '{"cluster":"prod-east-2","sync":{"wave":30},"tenant":"team-b"}' >"$d/tenants/team-b/clusters/prod-east-2/argocd.json"
+expect_fail "lint rejects a non-string wave" "$d/scripts/lint"
+d=$(copy_repo)
+mkdir -p "$d/tenants/team-b/clusters/nope" && echo '{}' >"$d/tenants/team-b/clusters/nope/argocd.json"
+expect_fail "lint rejects an unknown cluster" "$d/scripts/lint"
 
 echo
 if [[ $failures -gt 0 ]]; then

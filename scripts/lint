@@ -45,10 +45,12 @@ for k in apps/*/clusters/*/kustomization.yaml; do
 done
 
 # Cluster dirs.
-declare -A canonical=()
+declare -A canonical=() has_appset=()
 is_git=false
 git rev-parse --git-dir >/dev/null 2>&1 && is_git=true
 mapfile -t appsets < <(appset_names)
+# argocd/kustomization.yaml may differ only in which bootstrap/bases/<base> it uses.
+normalize() { sed -E 's|bootstrap/bases/[^/[:space:]]+|bootstrap/bases/BASE|' "$1"; }
 for c in "${clusters[@]}"; do
   d=clusters/$c
   for f in apps.yaml facts/kustomization.yaml facts/facts.yaml argocd/kustomization.yaml argocd/revisions.env; do
@@ -59,24 +61,41 @@ for c in "${clusters[@]}"; do
     [[ $(yq -r '.metadata.annotations["config.kubernetes.io/local-config"] // ""' "$d/facts/facts.yaml") == "true" ]] \
       || err "$d/facts/facts.yaml: missing annotation config.kubernetes.io/local-config: \"true\""
   fi
-  # facts/ and argocd/ kustomizations must be identical across clusters.
+  # facts/ and argocd/ kustomizations must be identical across clusters (argocd/ up to its base).
   for f in facts/kustomization.yaml argocd/kustomization.yaml; do
     [[ -f $d/$f ]] || continue
     if [[ -z ${canonical[$f]:-} ]]; then
       canonical[$f]=$d/$f
-    elif ! cmp -s "${canonical[$f]}" "$d/$f"; then
-      err "$d/$f: differs from ${canonical[$f]} (must be identical for every cluster)"
+    elif ! cmp -s <(normalize "${canonical[$f]}") <(normalize "$d/$f"); then
+      err "$d/$f: differs from ${canonical[$f]} (must be identical for every cluster, apart from the base)"
     fi
   done
-  # Pins: known ApplicationSets, a full SHA or main, and (for cluster-config) a commit with this cluster.
+  # The rendered ApplicationSets must build with every placeholder filled.
+  cluster_sets=()
+  if [[ -f $d/argocd/kustomization.yaml ]]; then
+    if ! out=$(kustomize build "$d/argocd" 2>&1); then
+      err "$d/argocd: kustomize build failed: $(echo "$out" | head -n1)"
+    else
+      grep -qE '\b(REVISION|CLUSTER)\b' <<<"$out" \
+        && err "$d/argocd: rendered ApplicationSets still contain REVISION/CLUSTER placeholders"
+      mapfile -t cluster_sets < <(yq -r 'select(.kind == "ApplicationSet") | .metadata.name' <<<"$out")
+      for a in "${cluster_sets[@]}"; do has_appset[$c/$a]=1; done
+    fi
+  fi
+  # Pins: ApplicationSets in this cluster's base, a full SHA or main, and (for cluster-config)
+  # a commit with this cluster's joins.
   env=$d/argocd/revisions.env
   if [[ -f $env ]]; then
     dups=$(env_keys "$env" | sort | uniq -d)
     [[ -z $dups ]] || err "$env: duplicate keys: $(echo $dups)"
     while IFS= read -r key; do
       val=$(env_get "$env" "$key")
-      printf '%s\n' "${appsets[@]}" | grep -qxF "$key" \
-        || { err "$env: unknown ApplicationSet '$key' (not in bootstrap/appsets/revisions.env)"; continue; }
+      if ! printf '%s\n' "${appsets[@]}" | grep -qxF "$key"; then
+        err "$env: unknown ApplicationSet '$key' (not in bootstrap/appset-revisions/revisions.env)"
+        continue
+      fi
+      [[ ${#cluster_sets[@]} -eq 0 || -n ${has_appset[$c/$key]:-} ]] \
+        || err "$env: pins '$key' but this cluster's base doesn't include it"
       if [[ $val == main ]]; then
         continue
       elif [[ ! $val =~ ^[0-9a-f]{40}$ ]]; then
@@ -90,14 +109,26 @@ for c in "${clusters[@]}"; do
       fi
     done < <(env_keys "$env")
   fi
-  # The rendered ApplicationSets must have every placeholder filled.
-  if [[ -f $d/argocd/kustomization.yaml ]]; then
-    if ! out=$(kustomize build "$d/argocd" 2>&1); then
-      err "$d/argocd: kustomize build failed: $(echo "$out" | head -n1)"
-    elif grep -qE '\b(REVISION|CLUSTER)\b' <<<"$out"; then
-      err "$d/argocd: rendered ApplicationSets still contain REVISION/CLUSTER placeholders"
-    fi
+done
+
+# Tenants: tenants/<tenant>/clusters/<cluster>/ needs a kustomization and a matching argocd.json.
+for j in tenants/*/clusters/*/argocd.json; do
+  [[ -f $j ]] || continue
+  dir=$(dirname "$j")
+  c=$(basename "$dir")
+  t=$(basename "$(dirname "$(dirname "$dir")")")
+  [[ -f $dir/kustomization.yaml ]] || err "$dir: missing kustomization.yaml"
+  if [[ ! -d clusters/$c ]]; then
+    err "$dir: no cluster named '$c'"
+    continue
   fi
+  [[ -n ${has_appset[$c/tenant-config]:-} ]] \
+    || warnings+=("$dir: $c's base doesn't include tenant-config, so this isn't deployed")
+  [[ $(yq -p=json -o=yaml -r '.tenant // ""' "$j") == "$t" ]] || err "$j: tenant must be '$t'"
+  [[ $(yq -p=json -o=yaml -r '.cluster // ""' "$j") == "$c" ]] || err "$j: cluster must be '$c'"
+  yq -p=json -e '[(.sync.wave | tag) == "!!str",
+                  ((.sync.automated // {}) | to_entries | all_c(.value | tag == "!!bool"))] | all' "$j" >/dev/null 2>&1 \
+    || err "$j: needs sync.wave as a string; sync.automated values must be booleans"
 done
 
 # App dirs.

@@ -11,7 +11,8 @@ Usage: scripts/render-all <outdir> [repo-dir]
 
 Renders every apps/<app>/clusters/<cluster>/ in repo-dir (default: this repo) to
 <outdir>/<cluster>/<app>.yaml and copies its argocd.json to
-<outdir>/<cluster>/<app>.argocd.json.
+<outdir>/<cluster>/<app>.argocd.json. Tenants (tenants/<tenant>/clusters/<cluster>/) go to
+<outdir>/<cluster>/tenant-<tenant>.yaml and .argocd.json.
 USAGE
 }
 
@@ -36,4 +37,16 @@ for join in "$src"/apps/*/clusters/*/; do
   if [[ -f $join/argocd.json ]]; then
     cp "$join/argocd.json" "$out/$cluster/$app.argocd.json"
   fi
+done
+
+for dir in "$src"/tenants/*/clusters/*/; do
+  [[ -f $dir/argocd.json && -f $dir/kustomization.yaml ]] || continue
+  dir=${dir%/}
+  cluster=$(basename "$dir")
+  tenant=$(basename "$(dirname "$(dirname "$dir")")")
+  mkdir -p "$out/$cluster"
+  # shellcheck disable=SC2086
+  kustomize build ${KUSTOMIZE_BUILD_OPTIONS:-} "$dir" >"$out/$cluster/tenant-$tenant.yaml" \
+    || die "kustomize build failed for tenants/$tenant/clusters/$cluster"
+  cp "$dir/argocd.json" "$out/$cluster/tenant-$tenant.argocd.json"
 done

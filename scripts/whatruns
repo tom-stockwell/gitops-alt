@@ -12,7 +12,8 @@ Usage: scripts/whatruns [cluster...]
 Prints APP OVERLAY MIXINS AUTO-SYNC PRUNE SELF-HEAL WAVE per cluster (default: all clusters),
 sorted by wave then app. Reads the generated argocd.json files at the commit the cluster's
 cluster-config ApplicationSet is pinned to; clusters tracking main are read from the
-working tree.
+working tree. Clusters whose base includes tenant-config also list their tenants at that
+ApplicationSet's pin.
 USAGE
 }
 
@@ -25,7 +26,7 @@ for arg in "$@"; do
   esac
 done
 
-require_tools yq
+require_tools kustomize yq
 ROOT=$(repo_root)
 if [[ ${#clusters[@]} -eq 0 ]]; then
   mapfile -t clusters < <(list_clusters)
@@ -59,4 +60,16 @@ for c in "${clusters[@]}"; do
   } | awk -F'\t' '
       { for (i = 1; i <= NF; i++) { cell[NR, i] = $i; if (length($i) > w[i]) w[i] = length($i) } n = NR; nf = NF }
       END { for (r = 1; r <= n; r++) { line = "  "; for (i = 1; i <= nf; i++) line = line sprintf(i < nf ? "%-" w[i] + 2 "s" : "%s", cell[r, i]); print line } }'
+  if cluster_appsets "$c" | grep -qxF tenant-config; then
+    trev=$(appset_revision "$c" tenant-config)
+    if [[ $trev == main ]]; then
+      tenants=$(for j in "$ROOT"/tenants/*/clusters/"$c"/argocd.json; do [[ -f $j ]] && basename "$(dirname "$(dirname "$(dirname "$j")")")"; done)
+      label="main; working tree"
+    else
+      git -C "$ROOT" cat-file -e "$trev^{commit}" 2>/dev/null || die "$c: pinned commit $trev not found locally; fetch it"
+      tenants=$(git -C "$ROOT" ls-tree -r --name-only "$trev" -- tenants | sed -nE "s|^tenants/([^/]+)/clusters/$c/argocd.json\$|\1|p")
+      label=${trev:0:12}
+    fi
+    echo "  tenants (tenant-config @ $label): $(echo $tenants | sed 's/ /, /g')"
+  fi
 done

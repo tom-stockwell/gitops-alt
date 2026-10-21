@@ -1,23 +1,39 @@
 # Fills each ApplicationSet's placeholders from the appset-revisions ConfigMap (one key per
 # ApplicationSet) and the cluster facts. Used by every clusters/<cluster>/argocd/.
 #
+# It lists every ApplicationSet. A replacement target that isn't in the cluster's base
+# selects nothing and is skipped, so one Component serves every base.
+#
 # Adding an ApplicationSet <name>:
-#   1. bootstrap/appsets/<name>.yaml with REVISION (and CLUSTER where needed) placeholders,
-#      listed in bootstrap/appsets/kustomization.yaml;
-#   2. `<name>=main` in bootstrap/appsets/revisions.env;
-#   3. a replacement block below, selecting the ApplicationSet by name.
+#   1. bootstrap/appsets/<name>/ (kustomization.yaml + applicationset.yaml) with REVISION
+#      (and CLUSTER where needed) placeholders;
+#   2. `<name>=main` in bootstrap/appset-revisions/revisions.env;
+#   3. a revision replacement below, and (if it uses CLUSTER) a target on the cluster-name
+#      replacement, selecting the ApplicationSet by name;
+#   4. include it in a base under bootstrap/bases/ (or add a new base for a new combination).
 apiVersion: kustomize.config.k8s.io/v1alpha1
 kind: Component
 replacements:
-# cluster-config
+# Revisions: one source key per ApplicationSet.
 - source: {kind: ConfigMap, name: appset-revisions, fieldPath: data.cluster-config}
   targets:
   - select: {kind: ApplicationSet, name: cluster-config}
-    fieldPaths:
+    fieldPaths: &revisions
     - spec.generators.0.git.revision
     - spec.template.spec.source.targetRevision
+
+- source: {kind: ConfigMap, name: appset-revisions, fieldPath: data.tenant-config}
+  targets:
+  - select: {kind: ApplicationSet, name: tenant-config}
+    fieldPaths: *revisions
+
+# Cluster name: generator paths are e.g. <dir>/*/clusters/CLUSTER/argocd.json, so segment 3.
 - source: {kind: ConfigMap, name: cluster-facts, fieldPath: data.name}
   targets:
   - select: {kind: ApplicationSet, name: cluster-config}
-    fieldPaths: [spec.generators.0.git.files.0.path]
+    fieldPaths: &namepath [spec.generators.0.git.files.0.path]
     options: {delimiter: "/", index: 3}          # apps/*/clusters/CLUSTER/argocd.json
+
+  - select: {kind: ApplicationSet, name: tenant-config}
+    fieldPaths: *namepath
+    options: {delimiter: "/", index: 3}          # tenants/*/clusters/CLUSTER/argocd.json

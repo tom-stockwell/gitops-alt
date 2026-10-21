@@ -1,9 +1,8 @@
-# Base for every cluster's ApplicationSets. Never applied directly: clusters/<cluster>/argocd/
-# builds it with the cluster's revisions.env merged in and bootstrap/revisions applied.
+# Default revision for every ApplicationSet (all main). Included by every base, so the
+# bootstrap/revisions Component always has a value for each key. It's local-config and never
+# applied, so defaults for ApplicationSets a base doesn't include are harmless.
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
-resources:
-- cluster-config.yaml
 generatorOptions:
   disableNameSuffixHash: true
   annotations:

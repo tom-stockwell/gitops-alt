@@ -113,7 +113,7 @@ env_get() {
 
 # appset_names: ApplicationSet names, from the default revisions file.
 appset_names() {
-  env_keys "$ROOT/bootstrap/appsets/revisions.env"
+  env_keys "$ROOT/bootstrap/appset-revisions/revisions.env"
 }
 
 # appset_revision <cluster> <appset>: the revision the cluster runs for that ApplicationSet
@@ -121,8 +121,13 @@ appset_names() {
 appset_revision() {
   local v=""
   [[ -f $ROOT/clusters/$1/argocd/revisions.env ]] && v=$(env_get "$ROOT/clusters/$1/argocd/revisions.env" "$2")
-  [[ -n $v ]] || v=$(env_get "$ROOT/bootstrap/appsets/revisions.env" "$2")
+  [[ -n $v ]] || v=$(env_get "$ROOT/bootstrap/appset-revisions/revisions.env" "$2")
   echo "$v"
+}
+
+# cluster_appsets <cluster>: names of the ApplicationSets the cluster's base includes.
+cluster_appsets() {
+  kustomize build "$ROOT/clusters/$1/argocd" | yq -r 'select(.kind == "ApplicationSet") | .metadata.name'
 }
 
 # commit_has_cluster <sha> <cluster>: true if the commit has generated joins for the cluster.

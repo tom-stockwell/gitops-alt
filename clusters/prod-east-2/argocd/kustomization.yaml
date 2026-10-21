@@ -1,9 +1,9 @@
 # This cluster's ApplicationSets, synced by its root Application (scripts/bootstrap-root).
-# Identical for every cluster; only revisions.env differs.
+# Identical for every cluster except the base, which picks the combination of ApplicationSets.
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 resources:
-- ../../../bootstrap/appsets
+- ../../../bootstrap/bases/base-with-tenants
 components:
 - ../facts
 - ../../../bootstrap/revisions

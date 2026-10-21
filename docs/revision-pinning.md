@@ -14,13 +14,13 @@ differed, an app added on main could point at a path that doesn't exist at the p
 ```
 root Application (per cluster, tracks main)
   └─ clusters/<cluster>/argocd/          kustomize build:
-       bootstrap/appsets                   ApplicationSets with REVISION/CLUSTER placeholders,
-                                           plus appset-revisions ConfigMap (defaults: main)
+       bootstrap/bases/<base>              the cluster's ApplicationSets (REVISION/CLUSTER
+                                           placeholders) + appset-revisions ConfigMap (all main)
        + clusters/<cluster>/argocd/revisions.env   merged over the defaults
        + clusters/<cluster>/facts          cluster-facts ConfigMap (name)
        + bootstrap/revisions               replacements fill the placeholders
-  → ApplicationSet cluster-config @ <pin>
-       → one Application per apps/*/clusters/<cluster>/argocd.json @ <pin>
+  → ApplicationSet cluster-config @ <its pin> → apps/*/clusters/<cluster>/argocd.json
+  → ApplicationSet tenant-config  @ <its pin> → tenants/*/clusters/<cluster>/argocd.json   (base-with-tenants)
 ```
 
 - `appset-revisions` and `cluster-facts` are local-config ConfigMaps. They feed the
@@ -33,38 +33,59 @@ root Application (per cluster, tracks main)
 - Bootstrap needs no cluster Secret or cluster generator: `scripts/bootstrap-root <cluster>`
   prints the root Application, and the cluster name comes from the facts.
 
+### Bases: which ApplicationSets a cluster runs
+
+`bootstrap/bases/` has one base per combination of ApplicationSets: `base` (cluster-config)
+and `base-with-tenants` (cluster-config + tenant-config). A cluster picks one in
+`clusters/<cluster>/argocd/kustomization.yaml`, and that line is the only difference between
+clusters' kustomizations (lint checks the rest).
+
+Two things keep the bases simple:
+- **The defaults cover every ApplicationSet.** `bootstrap/appset-revisions/` (included by
+  every base) defaults every ApplicationSet to main. The ConfigMap is never applied, so a
+  default for an ApplicationSet a base doesn't include is harmless.
+- **One Component for all of them.** `bootstrap/revisions` has replacements for every
+  ApplicationSet. A replacement whose target selector matches nothing in the cluster's base is
+  skipped, so the same Component works for every base.
+
 ### One ConfigMap for all ApplicationSets
 
 The pins live in one `appset-revisions` ConfigMap, generated from one `revisions.env` per
 cluster, with a key per ApplicationSet:
 
 ```sh
-# clusters/prod-east-1/argocd/revisions.env
+# clusters/prod-east-2/argocd/revisions.env
 cluster-config=3f2c9a1e4b7d6c5a8f9e0d1c2b3a4f5e6d7c8b9a
-tenants=9b8c7d6e5f4a3b2c1d0e9f8a7b6c5d4e3f2a1b0c   # once a tenants ApplicationSet exists
+tenant-config=9b8c7d6e5f4a3b2c1d0e9f8a7b6c5d4e3f2a1b0c
 ```
 
 This is easier than a ConfigMap per ApplicationSet:
 - Automation edits one file per cluster, one `key=value` line per ApplicationSet.
-- Each ApplicationSet is still pinned and promoted separately: `scripts/promote <cluster> <ref> --appset tenants`.
-- Adding an ApplicationSet doesn't touch any cluster's files. The cluster kustomization stays
-  identical, and unset keys fall back to the defaults in `bootstrap/appsets/revisions.env`.
+- Each ApplicationSet is still pinned and promoted separately: `scripts/promote <cluster> <ref> --appset tenant-config`.
+- Adding an ApplicationSet doesn't touch any cluster's pins. Unset keys fall back to main.
 
-### Adding an ApplicationSet (e.g. tenants)
+Lint rejects a pin for an ApplicationSet the cluster's base doesn't include.
 
-1. Add `bootstrap/appsets/tenants.yaml` with `REVISION` placeholders for both the generator
-   `revision` and `targetRevision`, plus `CLUSTER` wherever the cluster name is needed. List
-   it in `bootstrap/appsets/kustomization.yaml`.
-2. Add `tenants=main` to `bootstrap/appsets/revisions.env`.
-3. Add a replacement block for it in `bootstrap/revisions/kustomization.yaml`, selecting the
-   ApplicationSet by name.
+### Adding an ApplicationSet
+
+1. Add `bootstrap/appsets/<name>/` (kustomization.yaml + applicationset.yaml) with `REVISION`
+   placeholders for both the generator `revision` and `targetRevision`, plus `CLUSTER`
+   wherever the cluster name is needed.
+2. Add `<name>=main` to `bootstrap/appset-revisions/revisions.env`.
+3. In `bootstrap/revisions/kustomization.yaml`, add a revision replacement with source
+   `data.<name>`, and a target on the shared cluster-name replacement. Select the
+   ApplicationSet by name in both. Keep generator paths in the `<dir>/*/clusters/CLUSTER/…` shape
+   (like `apps/` and `tenants/`) so the cluster name is always path segment 3, and a
+   `clusters/` directory separates per-cluster overlays from everything else.
+4. Include it in an existing base, or add a base under `bootstrap/bases/` for the new
+   combination, and point the clusters that should run it at that base.
 
 `make check` fails if any cluster's rendered ApplicationSets still contain a placeholder.
 
 ### Known gap
 
-The root Application tracks main, so changes to `bootstrap/appsets/` and `bootstrap/revisions/`
-(the ApplicationSet definitions themselves) reach every cluster as soon as they merge. Only
+The root Application tracks main, so changes under `bootstrap/` (the ApplicationSet
+definitions and bases themselves) and a cluster's choice of base reach every cluster as soon as they merge. Only
 what the ApplicationSets *generate* is pinned. Keep ApplicationSet changes small and
 backwards compatible, and preview them with `kustomize build clusters/<cluster>/argocd`.
 

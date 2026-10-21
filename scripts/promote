@@ -32,12 +32,14 @@ while [[ $# -gt 0 ]]; do
 done
 [[ -n $cluster && -n $ref ]] || { usage >&2; exit 1; }
 
-require_tools git
+require_tools git kustomize yq
 ROOT=$(repo_root)
 env=$ROOT/clusters/$cluster/argocd/revisions.env
 [[ -d $ROOT/clusters/$cluster ]] || die "unknown cluster: $cluster"
 [[ -f $env ]] || die "clusters/$cluster/argocd/revisions.env not found"
-appset_names | grep -qxF "$appset" || die "unknown ApplicationSet '$appset' (not in bootstrap/appsets/revisions.env)"
+appset_names | grep -qxF "$appset" || die "unknown ApplicationSet '$appset' (not in bootstrap/appset-revisions/revisions.env)"
+cluster_appsets "$cluster" | grep -qxF "$appset" \
+  || die "$cluster's base doesn't include ApplicationSet '$appset' (see clusters/$cluster/argocd/kustomization.yaml)"
 sha=$(git -C "$ROOT" rev-parse --verify -q "$ref^{commit}") || die "unknown ref: $ref"
 if [[ $appset == cluster-config ]]; then
   commit_has_cluster "$sha" "$cluster" || die "$ref ($sha) has no apps/*/clusters/$cluster/; pin a commit that includes this cluster"

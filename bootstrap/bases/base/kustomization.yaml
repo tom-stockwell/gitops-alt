@@ -1,0 +1,6 @@
+# ApplicationSets for a cluster that only runs cluster config (apps/).
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+- ../../appset-revisions
+- ../../appsets/cluster-config
