@@ -96,15 +96,28 @@ expect_eq "prod-east-2 replicas" "1" "$(kind_field "$OUT/monitoring-east2.yaml" 
 
 t T7 "argocd.json values"
 aj() { yq -p=json -o=yaml -r "$3" "$ROOT/apps/$1/clusters/$2/argocd.json"; }
-expect_eq "logging@east-1 auto" "true" "$(aj logging prod-east-1 .sync.auto)"
+expect_eq "logging@east-1 automated.enabled" "true" "$(aj logging prod-east-1 .sync.automated.enabled)"
 expect_eq "logging@east-1 wave" "10" "$(aj logging prod-east-1 .sync.wave)"
 expect_eq "logging@east-1 wave type" "!!str" "$(aj logging prod-east-1 '.sync.wave | tag')"
-expect_eq "logging@east-2 auto" "false" "$(aj logging prod-east-2 .sync.auto)"
-expect_eq "monitoring@east-1 auto" "false" "$(aj monitoring prod-east-1 .sync.auto)"
-expect_eq "monitoring@east-2 auto" "true" "$(aj monitoring prod-east-2 .sync.auto)"
+expect_eq "logging@east-2 automated.enabled" "false" "$(aj logging prod-east-2 .sync.automated.enabled)"
+expect_eq "monitoring@east-1 automated.enabled" "false" "$(aj monitoring prod-east-1 .sync.automated.enabled)"
+expect_eq "monitoring@east-2 automated.enabled" "true" "$(aj monitoring prod-east-2 .sync.automated.enabled)"
 expect_eq "cert-manager wave" "0" "$(aj cert-manager prod-east-1 .sync.wave)"
+for c in prod-east-1 prod-east-2; do
+  for f in "$ROOT"/apps/*/clusters/$c/argocd.json; do
+    app=$(basename "$(dirname "$(dirname "$(dirname "$f")")")")
+    expect_eq "$app@$c prune/selfHeal default" "true true" "$(aj "$app" $c '[.sync.automated.prune, .sync.automated.selfHeal] | join(" ")')"
+  done
+done
+d=$(copy_repo)
+yq -i '.apps.logging = {"overlay": "prod", "sync": {"automated": {"prune": false}}}' "$d/clusters/prod-east-1/apps.yaml"
+expect_ok "generate with prune override" "$d/scripts/generate" prod-east-1
+expect_eq "prune override keeps other defaults" '{"enabled":true,"prune":false,"selfHeal":true}' \
+  "$(yq -p=json -o=json -I=0 .sync.automated "$d/apps/logging/clusters/prod-east-1/argocd.json")"
+yq -i '.apps.logging = {"overlay": "prod", "sync": {"automated": {"enabled": "no"}}}' "$d/clusters/prod-east-1/apps.yaml"
+expect_fail "non-boolean enabled" "$d/scripts/generate" prod-east-1
 expect_eq "logging@east-2 full" \
-  '{"app":"logging","cluster":"prod-east-2","mixins":["canary"],"overlay":"prod","sync":{"auto":false,"wave":"10"}}' \
+  '{"app":"logging","cluster":"prod-east-2","mixins":["canary"],"overlay":"prod","sync":{"automated":{"enabled":false,"prune":true,"selfHeal":true},"wave":"10"}}' \
   "$(cat "$ROOT/apps/logging/clusters/prod-east-2/argocd.json")"
 
 t T8 "null removes an app"
@@ -168,7 +181,28 @@ a=$ROOT/bootstrap/applicationset.yaml
 expect_ok "parses" yq -e . "$a"
 expect_eq "cluster selector" "true" \
   "$(yq -r '.spec.generators[0].matrix.generators[0].clusters.selector.matchLabels["gitops.example.com/local"]' "$a")"
-expect_eq "destination" "https://kubernetes.default.svc" "$(yq -r .spec.template.spec.destination.server "$a")"
+# The destination comes from the local cluster Secret, whose server is the in-cluster API.
+expect_eq "destination" "{{ .server }}" "$(yq -r .spec.template.spec.destination.server "$a")"
+expect_eq "local secret server" "https://kubernetes.default.svc" "$("$S/bootstrap-secret" prod-east-1 | yq -r .stringData.server)"
+# Render templatePatch for a params file as the Go template would: dig returns the value if the
+# key exists (even false), else the default true.
+render_patch() { # <params-json>
+  local patch k v
+  patch=$(yq -r .spec.templatePatch "$a")
+  for k in enabled prune selfHeal; do
+    if [[ $(K=$k yq -p=json -o=yaml '.sync.automated // {} | has(strenv(K))' "$1") == true ]]; then
+      v=$(yq -p=json -o=yaml ".sync.automated.$k" "$1")
+    else
+      v=true
+    fi
+    patch=${patch//"{{ dig \"sync\" \"automated\" \"$k\" true . }}"/$v}
+  done
+  echo "$patch" | yq -o=json -I=0 .spec.syncPolicy.automated
+}
+expect_eq "templatePatch syncPolicy" '{"enabled":false,"prune":true,"selfHeal":true}' \
+  "$(render_patch "$ROOT/apps/logging/clusters/prod-east-2/argocd.json")"
+echo '{"sync":{"automated":{"prune":false}}}' >"$OUT/partial.json"
+expect_eq "templatePatch defaults" '{"enabled":true,"prune":false,"selfHeal":true}' "$(render_patch "$OUT/partial.json")"
 
 echo
 if [[ $failures -gt 0 ]]; then

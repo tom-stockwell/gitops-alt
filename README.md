@@ -18,7 +18,7 @@ is exactly what Argo CD applies on that cluster.
 
 ```
 apps/<app>/
-  argocd.yaml            default Argo settings (sync.auto, sync.wave)
+  argocd.yaml            default Argo settings (sync.wave, sync.automated.*)
   base/                  the app
   overlays/<intent>/     named by intent: prod, prod-abc, … (not by cluster)
   mixins/<name>/         optional Components: canary, ha, …
@@ -54,8 +54,13 @@ mixins and overlays.
 2. the profile entry's `sync`
 3. the cluster entry's `sync`
 
+Before step 1 come the built-in defaults: `sync.automated.enabled`, `prune` and `selfHeal`
+are all `true`. Set `enabled: false` to turn off automated sync for an app, for example
+`sync: {automated: {enabled: false}}`. `sync.wave` has no default, so every app's `argocd.yaml` must set it.
+
 The result is written to `apps/<app>/clusters/<cluster>/argocd.json`, which the
-ApplicationSet reads.
+ApplicationSet reads. Every key is always present in that file, so every Application gets the full
+`spec.syncPolicy.automated` block with explicit `enabled`, `prune` and `selfHeal`.
 
 ## Common tasks
 
@@ -66,7 +71,7 @@ ApplicationSet reads.
 | Add an app | Create `apps/<app>/{argocd.yaml,base/,overlays/<intent>/}`, add it to a profile or a cluster's `apps.yaml`, `make generate` |
 | Add a cluster | `make new-cluster NAME=prod-west-1 FROM=prod-east-1 DOMAIN=apps.west1.example.com`, then follow `bootstrap/README.md` |
 | Retarget an overlay | In `clusters/<c>/apps.yaml`: `logging: {overlay: prod-abc}`, `make generate` |
-| Run a canary | Add a mixin (e.g. `apps/logging/mixins/canary`) and in the cluster's `apps.yaml`: `logging: {overlay: prod, mixins: [canary], sync: {auto: false}}` |
+| Run a canary | Add a mixin (e.g. `apps/logging/mixins/canary`) and in the cluster's `apps.yaml`: `logging: {overlay: prod, mixins: [canary], sync: {automated: {enabled: false}}}` |
 | Remove an app from one cluster | In `clusters/<c>/apps.yaml`: `monitoring: null`, `make generate` |
 | One-off cluster exception | An overlay named after the cluster is allowed but must have `metadata.annotations.owner` and `reason`; `make check` lists them as warnings |
 | Promote | Merge to main (wave 0 follows automatically), then run the manual `promote-wave-1` and `promote-wave-2` CI jobs. See `bootstrap/README.md` |

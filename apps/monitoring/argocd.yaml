@@ -1,3 +1,4 @@
 sync:
-  auto: false      # demonstrates an app that defaults to manual sync
+  automated:
+    enabled: false # demonstrates an app that defaults to manual sync
   wave: "20"

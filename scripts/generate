@@ -72,8 +72,12 @@ for c in "${clusters[@]}"; do
       [[ -d $ROOT/apps/$app/mixins/$m ]] || die "$c: app '$app': apps/$app/mixins/$m/ does not exist"
     done
     sync=$(resolve_sync "$app" "$c")
-    SYNC=$sync yq -e -n 'env(SYNC) | [(.auto | tag) == "!!bool", .wave != null] | all' >/dev/null 2>&1 \
-      || die "$c: app '$app': resolved sync must have boolean 'auto' and a 'wave', got $sync"
+    SYNC=$sync yq -e -n 'env(SYNC) | [
+        (.automated.enabled | tag) == "!!bool",
+        (.automated.prune | tag) == "!!bool",
+        (.automated.selfHeal | tag) == "!!bool",
+        .wave != null] | all' >/dev/null 2>&1 \
+      || die "$c: app '$app': resolved sync needs boolean automated.{enabled,prune,selfHeal} and a 'wave', got $sync"
     echo "$sync" >"$work/$c.$app.sync.json"
   done
   # Stale joins must carry the generated header before we delete them.

@@ -1,1 +1,1 @@
-{"app":"cert-manager","cluster":"prod-east-1","mixins":[],"overlay":"prod","sync":{"auto":true,"wave":"0"}}
+{"app":"cert-manager","cluster":"prod-east-1","mixins":[],"overlay":"prod","sync":{"automated":{"enabled":true,"prune":true,"selfHeal":true},"wave":"0"}}

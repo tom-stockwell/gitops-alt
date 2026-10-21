@@ -3,8 +3,8 @@ apps:
   logging:                      # replace: canary mixin + manual sync during canary
     overlay: prod
     mixins: [canary]
-    sync: {auto: false}
+    sync: {automated: {enabled: false}}
   monitoring:                   # replace: no ha mixin, force auto sync
     overlay: prod
-    sync: {auto: true}
+    sync: {automated: {enabled: true}}
   gpu-operator: {overlay: prod} # add

@@ -23,8 +23,6 @@ spec:
       name: '{{.app}}'
       annotations:
         argocd.argoproj.io/sync-wave: '{{.sync.wave}}'
-      finalizers:
-      - resources-finalizer.argocd.argoproj.io
     spec:
       project: default
       source:
@@ -32,12 +30,14 @@ spec:
         targetRevision: 'wave-{{.metadata.labels.wave}}'
         path: '{{.path.path}}'
       destination:
-        server: '{{ .name }}'
+        server: '{{ .server }}'
+
+  # templatePatch so the values render as booleans, not strings. `dig` falls back to true
+  # only when a key is missing; unlike `default`, it keeps an explicit false.
   templatePatch: |
-    {{- if .sync.auto }}
     spec:
       syncPolicy:
         automated:
-          prune: true
-          selfHeal: true
-    {{- end }}
+          enabled: {{ dig "sync" "automated" "enabled" true . }}
+          prune: {{ dig "sync" "automated" "prune" true . }}
+          selfHeal: {{ dig "sync" "automated" "selfHeal" true . }}

@@ -19,6 +19,7 @@ Every cluster runs its own Argo CD (OpenShift GitOps) with argocd-agent in
    ```
    It reads `apps/*/clusters/<name>/argocd.json` at tag `wave-N` and creates one
    Application per app, each pointing at `apps/<app>/clusters/<name>`.
+   Each Application deploys to the `server` of that Secret (`https://kubernetes.default.svc`).
 
 ## Waves, promotion and rollback
 
@@ -34,5 +35,8 @@ Every cluster runs its own Argo CD (OpenShift GitOps) with argocd-agent in
 - The git generator's `revision` is templated from matrix params
   (`wave-{{.metadata.labels.wave}}` comes from the cluster generator). Check that your
   ApplicationSet controller version supports templating `revision` inside a matrix.
-- `spec.templatePatch` (used to turn on automated sync only when `sync.auto` is true)
-  needs Argo CD 2.10 or later.
+- `spec.templatePatch` (used so `syncPolicy.automated` values render as booleans) needs
+  Argo CD 2.10 or later.
+- `spec.syncPolicy.automated.enabled` (used to turn off automated sync per app) is a newer
+  field. Check that your Argo CD version supports it. Older versions reject or ignore it.
+  Without it, automated sync is on whenever the `automated` block is present.

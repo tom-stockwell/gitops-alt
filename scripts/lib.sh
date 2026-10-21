@@ -86,13 +86,15 @@ resolved_apps() {
                        | with_entries(select(.value != null))' "$pfile" "$ROOT/clusters/$c/apps.yaml"
 }
 
-# resolve_sync <app> <cluster>: argocd.yaml sync * profile entry sync * cluster entry sync, as compact JSON.
+# resolve_sync <app> <cluster>: built-in defaults * argocd.yaml sync * profile entry sync * cluster entry sync,
+# as compact JSON.
 resolve_sync() {
   local app=$1 c=$2 pfile defaults="$ROOT/apps/$1/argocd.yaml"
   [[ -f $defaults ]] || die "apps/$app/argocd.yaml not found"
   pfile=$(profile_file "$c") || exit 1
   APP=$app yq eval-all -o=json -I=0 '
-      (select(fi==0).sync // {})
+      {"automated": {"enabled": true, "prune": true, "selfHeal": true}}
+    * (select(fi==0).sync // {})
     * (select(fi==1).apps[strenv(APP)].sync // {})
     * (select(fi==2).apps[strenv(APP)].sync // {})' \
     "$defaults" "$pfile" "$ROOT/clusters/$c/apps.yaml"
