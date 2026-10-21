@@ -1,0 +1,43 @@
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: cluster-config
+  namespace: openshift-gitops
+spec:
+  goTemplate: true
+  goTemplateOptions: ["missingkey=error"]
+  generators:
+  - matrix:
+      generators:
+      - clusters:
+          selector:
+            matchLabels:
+              gitops.example.com/local: "true"
+      - git:
+          repoURL: https://git.example.com/platform/gitops.git
+          revision: 'wave-{{.metadata.labels.wave}}'
+          files:
+          - path: 'apps/*/clusters/{{.name}}/argocd.json'
+  template:
+    metadata:
+      name: '{{.app}}'
+      annotations:
+        argocd.argoproj.io/sync-wave: '{{.sync.wave}}'
+      finalizers:
+      - resources-finalizer.argocd.argoproj.io
+    spec:
+      project: default
+      source:
+        repoURL: https://git.example.com/platform/gitops.git
+        targetRevision: 'wave-{{.metadata.labels.wave}}'
+        path: '{{.path.path}}'
+      destination:
+        server: '{{ .name }}'
+  templatePatch: |
+    {{- if .sync.auto }}
+    spec:
+      syncPolicy:
+        automated:
+          prune: true
+          selfHeal: true
+    {{- end }}

@@ -1,0 +1,5 @@
+# Default app list for prod clusters. Selection only — no config here.
+apps:
+  cert-manager: {overlay: prod}
+  logging:      {overlay: prod}
+  monitoring:   {overlay: prod, mixins: [ha]}

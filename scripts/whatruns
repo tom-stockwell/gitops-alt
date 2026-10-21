@@ -1,0 +1,48 @@
+#!/usr/bin/env bash
+# Show which apps run on each cluster, with overlay, mixins and sync settings.
+set -euo pipefail
+SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+# shellcheck source=lib.sh
+source "$SCRIPT_DIR/lib.sh"
+
+usage() {
+  cat <<USAGE
+Usage: scripts/whatruns [cluster...]
+
+Prints APP OVERLAY MIXINS AUTO-SYNC WAVE per cluster (default: all clusters),
+from the generated argocd.json files, sorted by wave then app.
+USAGE
+}
+
+clusters=()
+for arg in "$@"; do
+  case $arg in
+    -h|--help) usage; exit 0 ;;
+    -*) die "unknown option: $arg" ;;
+    *) clusters+=("$arg") ;;
+  esac
+done
+
+require_tools yq
+ROOT=$(repo_root)
+if [[ ${#clusters[@]} -eq 0 ]]; then
+  mapfile -t clusters < <(list_clusters)
+fi
+
+first=true
+for c in "${clusters[@]}"; do
+  [[ -d $ROOT/clusters/$c ]] || die "unknown cluster: $c"
+  $first || echo
+  first=false
+  echo "$c"
+  {
+    printf 'APP\tOVERLAY\tMIXINS\tAUTO-SYNC\tWAVE\n'
+    for f in "$ROOT"/apps/*/clusters/"$c"/argocd.json; do
+      [[ -f $f ]] || continue
+      yq -p=json -o=yaml -r '[.app, .overlay, (.mixins | join(",")), .sync.auto, .sync.wave] | @tsv' "$f" \
+        | awk -F'\t' -v OFS='\t' '$3 == "" { $3 = "-" } 1'
+    done | LC_ALL=C sort -t$'\t' -k5,5n -k1,1
+  } | awk -F'\t' '
+      { for (i = 1; i <= NF; i++) { cell[NR, i] = $i; if (length($i) > w[i]) w[i] = length($i) } n = NR; nf = NF }
+      END { for (r = 1; r <= n; r++) { line = "  "; for (i = 1; i <= nf; i++) line = line sprintf(i < nf ? "%-" w[i] + 2 "s" : "%s", cell[r, i]); print line } }'
+done

@@ -1,0 +1,7 @@
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: logging
+spec:
+  host: logging.CLUSTER_DOMAIN       # segment after the first "." filled from facts
+  to: {kind: Service, name: logging}

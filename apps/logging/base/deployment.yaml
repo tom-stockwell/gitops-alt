@@ -1,0 +1,18 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: logging
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: logging}
+  template:
+    metadata:
+      labels: {app: logging}
+    spec:
+      containers:
+      - name: logging
+        image: quay.io/example/logging:2.3.0
+        env:
+        - name: CLUSTER_NAME
+          value: CLUSTER_NAME        # filled from cluster facts

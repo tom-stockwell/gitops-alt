@@ -1,0 +1,7 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: gpu-operator-settings
+  namespace: gpu-operator
+data:
+  driver: "550"

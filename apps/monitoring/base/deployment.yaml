@@ -1,0 +1,18 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: monitoring
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: monitoring}
+  template:
+    metadata:
+      labels: {app: monitoring}
+    spec:
+      containers:
+      - name: monitoring
+        image: quay.io/example/monitoring:1.0.0
+        env:
+        - name: CLUSTER_NAME
+          value: CLUSTER_NAME

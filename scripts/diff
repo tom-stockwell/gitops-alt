@@ -1,0 +1,75 @@
+#!/usr/bin/env bash
+# Render a base ref and the working tree and show the difference in manifests.
+set -euo pipefail
+SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+# shellcheck source=lib.sh
+source "$SCRIPT_DIR/lib.sh"
+
+usage() {
+  cat <<USAGE
+Usage: scripts/diff [base-ref]
+
+Renders every app/cluster at base-ref (default: origin/main, else main, else HEAD)
+and in the working tree, writes the difference to rendered/manifests.diff and prints
+it. Uses dyff per file if installed, otherwise diff -ruN. Exits 0 when there are
+differences; non-zero only on errors.
+USAGE
+}
+
+case ${1:-} in -h|--help) usage; exit 0 ;; esac
+[[ $# -le 1 ]] || { usage >&2; exit 1; }
+
+require_tools kustomize yq git
+ROOT=$(repo_root)
+git -C "$ROOT" rev-parse --git-dir >/dev/null 2>&1 || die "$ROOT is not a git repository"
+
+if [[ $# -eq 1 ]]; then
+  base=$1
+  git -C "$ROOT" rev-parse --verify -q "$base^{commit}" >/dev/null || die "unknown ref: $base"
+else
+  base=""
+  for ref in origin/main main HEAD; do
+    if git -C "$ROOT" rev-parse --verify -q "$ref^{commit}" >/dev/null; then
+      base=$ref
+      break
+    fi
+  done
+  [[ -n $base ]] || die "no base ref found (tried origin/main, main, HEAD)"
+fi
+
+tmp=$(mktemp -d)
+cleanup_add "$tmp"
+worktree=$tmp/worktree
+git -C "$ROOT" worktree add -q --detach "$worktree" "$base" || die "git worktree add failed for $base"
+remove_worktree() { git -C "$ROOT" worktree remove --force "$worktree" 2>/dev/null || true; }
+trap 'remove_worktree; _cleanup' EXIT
+
+"$SCRIPT_DIR/render-all" "$tmp/base" "$worktree"
+"$SCRIPT_DIR/render-all" "$tmp/head" "$ROOT"
+
+mkdir -p "$ROOT/rendered"
+result=$ROOT/rendered/manifests.diff
+cd "$tmp"
+if command -v dyff >/dev/null 2>&1; then
+  : >"$result"
+  while read -r f; do
+    if [[ $f == *.yaml && -f base/$f && -f head/$f ]]; then
+      dyff between --omit-header --set-exit-code "base/$f" "head/$f" >"$tmp/one" 2>&1 && rc=0 || rc=$?
+      [[ $rc -le 1 ]] || { cat "$tmp/one" >&2; die "dyff failed on $f"; }
+      [[ $rc -eq 0 ]] || { echo "=== $f"; cat "$tmp/one"; } >>"$result"
+    else
+      diff -uN "base/$f" "head/$f" >>"$result" && rc=0 || rc=$?
+      [[ $rc -le 1 ]] || die "diff failed on $f"
+    fi
+  done < <( (cd base && find . -type f; cd ../head && find . -type f) | sed 's|^\./||' | LC_ALL=C sort -u)
+else
+  diff -ruN base head >"$result" && rc=0 || rc=$?
+  [[ $rc -le 1 ]] || die "diff failed"
+fi
+
+cat "$result"
+if [[ -s $result ]]; then
+  echo "rendered manifests differ from $base; see rendered/manifests.diff" >&2
+else
+  echo "no rendered changes against $base" >&2
+fi

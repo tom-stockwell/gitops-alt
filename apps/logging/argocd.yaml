@@ -1,0 +1,4 @@
+# Default Argo CD settings for this app. Overridable per profile/cluster via `sync:`.
+sync:
+  auto: true
+  wave: "10"

@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+# Render what Argo CD applies for one app on one cluster.
+set -euo pipefail
+SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+# shellcheck source=lib.sh
+source "$SCRIPT_DIR/lib.sh"
+
+usage() {
+  cat <<USAGE
+Usage: scripts/render <app> <cluster>
+
+Runs kustomize build apps/<app>/clusters/<cluster>. Extra kustomize flags can be
+passed in \$KUSTOMIZE_BUILD_OPTIONS.
+USAGE
+}
+
+case ${1:-} in -h|--help) usage; exit 0 ;; esac
+[[ $# -eq 2 ]] || { usage >&2; exit 1; }
+app=$1 cluster=$2
+
+require_tools kustomize
+ROOT=$(repo_root)
+[[ -d $ROOT/apps/$app ]] || die "unknown app: $app"
+[[ -d $ROOT/clusters/$cluster ]] || die "unknown cluster: $cluster"
+[[ -f $ROOT/apps/$app/clusters/$cluster/kustomization.yaml ]] || die "$app is not assigned to $cluster"
+# shellcheck disable=SC2086
+kustomize build ${KUSTOMIZE_BUILD_OPTIONS:-} "$ROOT/apps/$app/clusters/$cluster"

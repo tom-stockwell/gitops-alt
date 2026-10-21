@@ -1,0 +1,1 @@
+{"app":"monitoring","cluster":"prod-east-2","mixins":[],"overlay":"prod","sync":{"auto":true,"wave":"20"}}

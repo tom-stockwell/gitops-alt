@@ -1,0 +1,93 @@
+#!/usr/bin/env bash
+# Check the structural rules of the repo.
+set -euo pipefail
+SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+# shellcheck source=lib.sh
+source "$SCRIPT_DIR/lib.sh"
+
+usage() {
+  cat <<USAGE
+Usage: scripts/lint
+
+Checks joins, cluster dirs and app dirs against the repo rules and lists every
+violation. Exits 1 if there are any.
+USAGE
+}
+
+case ${1:-} in
+  -h|--help) usage; exit 0 ;;
+  "") ;;
+  *) die "unexpected argument: $1" ;;
+esac
+
+require_tools yq
+ROOT=$(repo_root)
+cd "$ROOT"
+
+errors=()
+warnings=()
+err() { errors+=("$*"); }
+
+mapfile -t clusters < <(list_clusters)
+
+# Joins.
+for k in apps/*/clusters/*/kustomization.yaml; do
+  [[ -f $k ]] || continue
+  dir=$(dirname "$k")
+  c=$(basename "$dir")
+  head -n1 "$k" | grep -qF "$GENERATED_PREFIX" || err "$k: missing GENERATED header"
+  extra=$(yq -r 'keys | .[] | select(. != "apiVersion" and . != "kind" and . != "resources" and . != "components")' "$k")
+  [[ -z $extra ]] || err "$k: joins may only contain apiVersion/kind/resources/components, found: $(echo $extra)"
+  [[ $(yq '.resources | length' "$k") == 1 && $(yq -r '.resources[0]' "$k") =~ ^\.\./\.\./overlays/[^/]+$ ]] \
+    || err "$k: resources must be exactly one ../../overlays/<overlay>"
+  [[ $(yq -r '.components[-1] // ""' "$k") == "../../../../clusters/$c" ]] \
+    || err "$k: last component must be ../../../../clusters/$c"
+done
+
+# Cluster dirs.
+canonical=""
+for c in "${clusters[@]}"; do
+  d=clusters/$c
+  for f in kustomization.yaml facts.yaml apps.yaml; do
+    [[ -f $d/$f ]] || err "$d: missing $f"
+  done
+  if [[ -f $d/facts.yaml ]]; then
+    [[ $(yq -r '.data.name // ""' "$d/facts.yaml") == "$c" ]] || err "$d/facts.yaml: data.name must be '$c'"
+    [[ $(yq -r '.metadata.annotations["config.kubernetes.io/local-config"] // ""' "$d/facts.yaml") == "true" ]] \
+      || err "$d/facts.yaml: missing annotation config.kubernetes.io/local-config: \"true\""
+  fi
+  if [[ -f $d/kustomization.yaml ]]; then
+    if [[ -z $canonical ]]; then
+      canonical=$d/kustomization.yaml
+    elif ! cmp -s "$canonical" "$d/kustomization.yaml"; then
+      err "$d/kustomization.yaml: differs from $canonical (cluster kustomizations must be identical)"
+    fi
+  fi
+done
+
+# App dirs.
+for d in apps/*/; do
+  d=${d%/}
+  [[ -f $d/argocd.yaml ]] || err "$d: missing argocd.yaml"
+  [[ -d $d/overlays ]] || err "$d: missing overlays/"
+  for o in "$d"/overlays/*/; do
+    [[ -d $o ]] || continue
+    o=${o%/}
+    name=$(basename "$o")
+    for c in "${clusters[@]}"; do
+      [[ $name == "$c" ]] || continue
+      warnings+=("$o: overlay named after cluster $c (one-off exception)")
+      for a in owner reason; do
+        [[ -n $(A=$a yq -r '.metadata.annotations[strenv(A)] // ""' "$o/kustomization.yaml" 2>/dev/null) ]] \
+          || err "$o/kustomization.yaml: cluster-named overlay needs metadata.annotations.$a"
+      done
+    done
+  done
+done
+
+for w in "${warnings[@]+"${warnings[@]}"}"; do warn "$w"; done
+if [[ ${#errors[@]} -gt 0 ]]; then
+  printf 'lint: %s\n' "${errors[@]}" >&2
+  die "${#errors[@]} lint violation(s)"
+fi
+echo "lint ok"

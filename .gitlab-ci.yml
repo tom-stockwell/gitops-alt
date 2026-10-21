@@ -1,0 +1,70 @@
+# Tooling is installed in before_script with pinned versions; swap for a prebuilt image if you have one.
+default:
+  image: registry.access.redhat.com/ubi9/ubi-minimal:latest
+  before_script:
+    - microdnf install -y --nodocs git make tar gzip diffutils findutils >/dev/null
+    - curl -fsSL "https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize%2F${KUSTOMIZE_VERSION}/kustomize_${KUSTOMIZE_VERSION}_linux_amd64.tar.gz" | tar -xz -C /usr/local/bin kustomize
+    - curl -fsSL -o /usr/local/bin/yq "https://github.com/mikefarah/yq/releases/download/${YQ_VERSION}/yq_linux_amd64" && chmod +x /usr/local/bin/yq
+    - kustomize version && yq --version
+
+variables:
+  KUSTOMIZE_VERSION: v5.4.3
+  YQ_VERSION: v4.44.3
+  GIT_DEPTH: "0"
+
+stages:
+  - check
+  - diff
+  - promote
+
+check:
+  stage: check
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+  script:
+    - make check
+    - make test
+
+render-diff:
+  stage: diff
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+  script:
+    - git fetch origin "$CI_MERGE_REQUEST_TARGET_BRANCH_NAME"
+    - scripts/diff "origin/$CI_MERGE_REQUEST_TARGET_BRANCH_NAME"
+  artifacts:
+    expose_as: rendered manifests diff
+    paths:
+      - rendered/manifests.diff
+    when: always
+
+# Promotion = force-moving the wave-N tag to this commit. Clusters bootstrapped with
+# wave N (see bootstrap/README.md) follow tag wave-N.
+.promote:
+  stage: promote
+  script:
+    - git tag -f "wave-${WAVE}" "$CI_COMMIT_SHA"
+    - git push -f "https://gitops-ci:${GITOPS_PUSH_TOKEN}@${CI_SERVER_HOST}/${CI_PROJECT_PATH}.git" "refs/tags/wave-${WAVE}"
+
+promote-wave-0:
+  extends: .promote
+  variables: {WAVE: "0"}
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+
+promote-wave-1:
+  extends: .promote
+  variables: {WAVE: "1"}
+  needs: [promote-wave-0]
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+      when: manual
+
+promote-wave-2:
+  extends: .promote
+  variables: {WAVE: "2"}
+  needs: [promote-wave-1]
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+      when: manual

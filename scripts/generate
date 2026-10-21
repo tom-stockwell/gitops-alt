@@ -1,0 +1,131 @@
+#!/usr/bin/env bash
+# Generate the joins (apps/<app>/clusters/<cluster>/) from clusters/<cluster>/apps.yaml.
+set -euo pipefail
+SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+# shellcheck source=lib.sh
+source "$SCRIPT_DIR/lib.sh"
+
+usage() {
+  cat <<EOF
+Usage: scripts/generate [--check] [cluster...]
+
+Writes apps/<app>/clusters/<cluster>/{kustomization.yaml,argocd.json} for every app
+resolved from clusters/<cluster>/apps.yaml (and the profile it extends), and deletes
+generated joins for apps no longer assigned. Default: all clusters.
+
+  --check   generate into a temp copy and diff against the working tree; exit 1 on
+            any difference. Never modifies the tree.
+EOF
+}
+
+check=false
+clusters=()
+for arg in "$@"; do
+  case $arg in
+    -h|--help) usage; exit 0 ;;
+    --check) check=true ;;
+    -*) die "unknown option: $arg" ;;
+    *) clusters+=("$arg") ;;
+  esac
+done
+
+require_tools yq
+ROOT=$(repo_root)
+
+if $check; then
+  tmp=$(mktemp -d)
+  cleanup_add "$tmp"
+  tar -C "$ROOT" --exclude=./.git --exclude=./rendered -cf - . | tar -C "$tmp" -xf -
+  # The copy isn't a git repo, so its scripts resolve the root from their own location.
+  "$tmp/scripts/generate" "${clusters[@]+"${clusters[@]}"}" >/dev/null || die "generate failed"
+  changes=$(diff -ruN "$ROOT/apps" "$tmp/apps" | sed -e "s|$ROOT/|a/|g" -e "s|$tmp/|b/|g" || true)
+  if [[ -n $changes ]]; then
+    echo "$changes"
+    die "generated files are out of date; run scripts/generate"
+  fi
+  echo "generated files are up to date"
+  exit 0
+fi
+
+if [[ ${#clusters[@]} -eq 0 ]]; then
+  mapfile -t clusters < <(list_clusters)
+fi
+for c in "${clusters[@]}"; do
+  [[ -d $ROOT/clusters/$c ]] || die "unknown cluster: $c (no clusters/$c/)"
+done
+
+work=$(mktemp -d)
+cleanup_add "$work"
+
+# Pass 1: resolve and validate everything before touching the tree.
+for c in "${clusters[@]}"; do
+  resolved_apps "$c" >"$work/$c.json"
+  mapfile -t apps < <(yq -r 'keys | .[]' "$work/$c.json")
+  for app in "${apps[@]}"; do
+    [[ -d $ROOT/apps/$app ]] || die "$c: app '$app': apps/$app/ does not exist"
+    [[ -f $ROOT/apps/$app/argocd.yaml ]] || die "$c: app '$app': apps/$app/argocd.yaml does not exist"
+    overlay=$(APP=$app yq -r '.[strenv(APP)].overlay // ""' "$work/$c.json")
+    [[ -n $overlay ]] || die "$c: app '$app': no overlay set"
+    [[ -d $ROOT/apps/$app/overlays/$overlay ]] || die "$c: app '$app': apps/$app/overlays/$overlay/ does not exist"
+    mapfile -t mixins < <(APP=$app yq -r '.[strenv(APP)].mixins // [] | .[]' "$work/$c.json")
+    for m in "${mixins[@]+"${mixins[@]}"}"; do
+      [[ -d $ROOT/apps/$app/mixins/$m ]] || die "$c: app '$app': apps/$app/mixins/$m/ does not exist"
+    done
+    sync=$(resolve_sync "$app" "$c")
+    SYNC=$sync yq -e -n 'env(SYNC) | [(.auto | tag) == "!!bool", .wave != null] | all' >/dev/null 2>&1 \
+      || die "$c: app '$app': resolved sync must have boolean 'auto' and a 'wave', got $sync"
+    echo "$sync" >"$work/$c.$app.sync.json"
+  done
+  # Stale joins must carry the generated header before we delete them.
+  for dir in "$ROOT"/apps/*/clusters/"$c"/; do
+    [[ -d $dir ]] || continue
+    app=$(basename "$(dirname "$(dirname "$dir")")")
+    if ! printf '%s\n' "${apps[@]+"${apps[@]}"}" | grep -qxF "$app"; then
+      head -n1 "$dir/kustomization.yaml" 2>/dev/null | grep -qF "$GENERATED_PREFIX" \
+        || die "apps/$app/clusters/$c/ is not assigned in clusters/$c/apps.yaml and is not a generated join; remove it by hand"
+    fi
+  done
+done
+
+# Pass 2: write.
+for c in "${clusters[@]}"; do
+  mapfile -t apps < <(yq -r 'keys | .[]' "$work/$c.json")
+  for dir in "$ROOT"/apps/*/clusters/"$c"/; do
+    [[ -d $dir ]] || continue
+    app=$(basename "$(dirname "$(dirname "$dir")")")
+    if ! printf '%s\n' "${apps[@]+"${apps[@]}"}" | grep -qxF "$app"; then
+      rm -rf -- "$dir"
+      rmdir "$ROOT/apps/$app/clusters" 2>/dev/null || true
+      echo "removed apps/$app/clusters/$c"
+    fi
+  done
+  for app in "${apps[@]}"; do
+    out=$ROOT/apps/$app/clusters/$c
+    mkdir -p "$out"
+    overlay=$(APP=$app yq -r '.[strenv(APP)].overlay' "$work/$c.json")
+    mapfile -t mixins < <(APP=$app yq -r '.[strenv(APP)].mixins // [] | .[]' "$work/$c.json")
+    {
+      echo "$GENERATED_PREFIX from clusters/$c/apps.yaml — DO NOT EDIT."
+      echo "apiVersion: kustomize.config.k8s.io/v1beta1"
+      echo "kind: Kustomization"
+      echo "resources:"
+      echo "- ../../overlays/$overlay"
+      echo "components:"
+      for m in "${mixins[@]+"${mixins[@]}"}"; do
+        echo "- ../../mixins/$m"
+      done
+      echo "- ../../../../clusters/$c"
+    } >"$out/kustomization.yaml"
+    APP=$app CLUSTER=$c OVERLAY=$overlay \
+    MIXINS=$(APP=$app yq -o=json -I=0 '.[strenv(APP)].mixins // []' "$work/$c.json") \
+    SYNC=$(cat "$work/$c.$app.sync.json") \
+      yq -n -o=json -I=0 '{
+        "app": strenv(APP),
+        "cluster": strenv(CLUSTER),
+        "overlay": strenv(OVERLAY),
+        "mixins": env(MIXINS),
+        "sync": (env(SYNC) | .wave |= tostring)
+      } | sort_keys(..)' >"$out/argocd.json"
+    echo "wrote apps/$app/clusters/$c"
+  done
+done
