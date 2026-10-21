@@ -52,7 +52,8 @@ ApplicationSet the cluster's base doesn't include, or (for cluster-config) that 
 commit without this cluster's joins.
 
 See [docs/revision-pinning.md](../docs/revision-pinning.md) for why it works this way, how to
-add more ApplicationSets, and the alternative to use when cluster Secrets can be set up reliably.
+add more ApplicationSets, and [the nested-matrix alternative](../docs/revision-pinning-nested-matrix.md)
+to use when cluster Secrets can be set up reliably.
 
 ## Assumptions to verify against your Argo CD version
 

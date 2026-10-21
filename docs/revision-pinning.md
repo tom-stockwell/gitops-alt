@@ -89,90 +89,10 @@ definitions and bases themselves) and a cluster's choice of base reach every clu
 what the ApplicationSets *generate* is pinned. Keep ApplicationSet changes small and
 backwards compatible, and preview them with `kustomize build clusters/<cluster>/argocd`.
 
-## Alternative: one identical ApplicationSet, pin read through a nested matrix
+## Alternative: nested matrix
 
-**Prefer this when every cluster's local Argo CD cluster Secret can be relied on to be set up
-correctly**: present, labelled `gitops.example.com/local: "true"`, with the right `name`. For
-example, when the platform's cluster provisioning creates it rather than a person.
-**Otherwise use the approach above**, which doesn't depend on that Secret.
-
-With a reliable Secret, a single ApplicationSet, identical on every cluster, does it all:
-
-```
-cluster Secret → .name / .server
-  → git (main) clusters/<name>/revision.yaml → .revision
-  → git (.revision) apps/*/clusters/<name>/argocd.json → one Application per app
-```
-
-```yaml
-# clusters/prod-east-1/revision.yaml   (the pin, on main)
-revision: 3f2c9a1e4b7d6c5a8f9e0d1c2b3a4f5e6d7c8b9a
-```
-
-```yaml
-apiVersion: argoproj.io/v1alpha1
-kind: ApplicationSet
-metadata:
-  name: cluster-config
-  namespace: openshift-gitops
-spec:
-  goTemplate: true
-  goTemplateOptions: ["missingkey=error"]
-  generators:
-  - matrix:
-      generators:
-      # Which cluster am I, and which commit should I run? (read from main)
-      - matrix:
-          generators:
-          - clusters:
-              selector:
-                matchLabels:
-                  gitops.example.com/local: "true"
-          - git:
-              repoURL: https://git.example.com/platform/gitops.git
-              revision: main
-              pathParamPrefix: pin        # keeps this file's path params out of .path.*
-              files:
-              - path: 'clusters/{{.name}}/revision.yaml'
-      # What runs at that commit.
-      - git:
-          repoURL: https://git.example.com/platform/gitops.git
-          revision: '{{.revision}}'
-          files:
-          - path: 'apps/*/clusters/{{.name}}/argocd.json'
-  template:
-    metadata:
-      name: '{{.app}}'
-      annotations:
-        argocd.argoproj.io/sync-wave: '{{.sync.wave}}'
-    spec:
-      project: default
-      source:
-        repoURL: https://git.example.com/platform/gitops.git
-        targetRevision: '{{.revision}}'
-        path: '{{.path.path}}'
-      destination:
-        server: '{{ .server }}'
-  templatePatch: |
-    spec:
-      syncPolicy:
-        automated:
-          enabled: {{ dig "sync" "automated" "enabled" true . }}
-          prune: {{ dig "sync" "automated" "prune" true . }}
-          selfHeal: {{ dig "sync" "automated" "selfHeal" true . }}
-```
-
-| | Nested matrix | Root app + kustomized ApplicationSet (in use) |
-|---|---|---|
-| Applied by hand per cluster | the cluster Secret and the ApplicationSet | the root Application |
-| ApplicationSet | one, identical everywhere; not managed from git unless you add a root app | rendered per cluster from a shared base, and managed from git |
-| Cluster name comes from | the cluster Secret | `clusters/<cluster>/facts` |
-| A pin change takes effect | at the next generator refresh (~3 min) or on a webhook | when the root app syncs |
-| Risks | nested-matrix parameter passing must be verified on your Argo CD version; a wrong or missing Secret silently generates nothing | two layers to understand; ApplicationSet definitions themselves aren't pinned |
-
-Notes if you switch to it:
-- The nested matrix has to be the **first** child, so its `.name` and `.revision` reach the
-  second git generator. Argo CD allows only one level of matrix nesting.
-- `pathParamPrefix: pin` is required. Both git generators produce `.path.*` parameters.
-- Keep `scripts/promote` and the lint checks. Only the pin's file (`revision.yaml`) and key
-  change.
+When every cluster's local Argo CD cluster Secret can be relied on to be set up correctly,
+identical ApplicationSets can read each cluster's pins from `clusters/<cluster>/revisions.yaml`
+through a nested matrix generator, with no root app, bases or revisions Component. See
+[revision-pinning-nested-matrix.md](revision-pinning-nested-matrix.md) for when to prefer it,
+the full ApplicationSets, and how to switch.
