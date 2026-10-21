@@ -1,0 +1,6 @@
+# How apps are configured in prod. An entry replaces the cluster-type entry for that app, but
+# only for apps the cluster type selects: listing an app here never adds it to a cluster.
+apps:
+  cert-manager: {overlay: prod}
+  logging:      {overlay: prod}
+  monitoring:   {overlay: prod, mixins: [ha]}

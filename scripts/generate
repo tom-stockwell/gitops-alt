@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Generate the joins (apps/<app>/clusters/<cluster>/) from clusters/<cluster>/apps.yaml.
+# Generate the joins (apps/<app>/clusters/<cluster>/) from each cluster's profiles and apps.yaml.
 set -euo pipefail
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 # shellcheck source=lib.sh
@@ -10,8 +10,10 @@ usage() {
 Usage: scripts/generate [--check] [cluster...]
 
 Writes apps/<app>/clusters/<cluster>/{kustomization.yaml,argocd.json} for every app
-resolved from clusters/<cluster>/apps.yaml (and the profile it extends), and deletes
-generated joins for apps no longer assigned. Default: all clusters.
+resolved for the cluster (profiles/cluster-type/<clusterType>.yaml, then
+profiles/environment/<environment>.yaml, then clusters/<cluster>/apps.yaml), and deletes
+generated joins for apps no longer assigned. Default: all clusters, which also deletes
+generated joins for clusters that no longer exist.
 
   --check   generate into a temp copy and diff against the working tree; exit 1 on
             any difference. Never modifies the tree.
@@ -47,7 +49,9 @@ if $check; then
   exit 0
 fi
 
+all_clusters=false
 if [[ ${#clusters[@]} -eq 0 ]]; then
+  all_clusters=true
   mapfile -t clusters < <(list_clusters)
 fi
 for c in "${clusters[@]}"; do
@@ -86,12 +90,32 @@ for c in "${clusters[@]}"; do
     app=$(basename "$(dirname "$(dirname "$dir")")")
     if ! printf '%s\n' "${apps[@]+"${apps[@]}"}" | grep -qxF "$app"; then
       head -n1 "$dir/kustomization.yaml" 2>/dev/null | grep -qF "$GENERATED_PREFIX" \
-        || die "apps/$app/clusters/$c/ is not assigned in clusters/$c/apps.yaml and is not a generated join; remove it by hand"
+        || die "apps/$app/clusters/$c/ is no longer assigned to $c and is not a generated join; remove it by hand"
     fi
   done
 done
 
+# Joins for clusters that no longer exist (only when generating every cluster).
+orphans=()
+if $all_clusters; then
+  for dir in "$ROOT"/apps/*/clusters/*/; do
+    [[ -d $dir ]] || continue
+    c=$(basename "$dir")
+    [[ -d $ROOT/clusters/$c ]] && continue
+    app=$(basename "$(dirname "$(dirname "$dir")")")
+    head -n1 "$dir/kustomization.yaml" 2>/dev/null | grep -qF "$GENERATED_PREFIX" \
+      || die "apps/$app/clusters/$c/ is for a cluster that doesn't exist and is not a generated join; remove it by hand"
+    orphans+=("$dir")
+  done
+fi
+
 # Pass 2: write.
+for dir in "${orphans[@]+"${orphans[@]}"}"; do
+  app=$(basename "$(dirname "$(dirname "$dir")")")
+  rm -rf -- "$dir"
+  rmdir "$ROOT/apps/$app/clusters" 2>/dev/null || true
+  echo "removed apps/$app/clusters/$(basename "$dir") (cluster no longer exists)"
+done
 for c in "${clusters[@]}"; do
   mapfile -t apps < <(yq -r 'keys | .[]' "$work/$c.json")
   for dir in "$ROOT"/apps/*/clusters/"$c"/; do
@@ -109,7 +133,7 @@ for c in "${clusters[@]}"; do
     overlay=$(APP=$app yq -r '.[strenv(APP)].overlay' "$work/$c.json")
     mapfile -t mixins < <(APP=$app yq -r '.[strenv(APP)].mixins // [] | .[]' "$work/$c.json")
     {
-      echo "$GENERATED_PREFIX from clusters/$c/apps.yaml — DO NOT EDIT."
+      echo "$GENERATED_PREFIX for clusters/$c — DO NOT EDIT."
       echo "apiVersion: kustomize.config.k8s.io/v1beta1"
       echo "kind: Kustomization"
       echo "resources:"

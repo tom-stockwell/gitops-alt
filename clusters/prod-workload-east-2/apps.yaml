@@ -1,0 +1,10 @@
+# Exceptions for this cluster; its clusterType and environment profiles set the rest.
+apps:
+  logging:                      # replace: canary mixin + manual sync during canary
+    overlay: prod
+    mixins: [canary]
+    sync: {automated: {enabled: false}}
+  monitoring:                   # replace: no ha mixin, force auto sync
+    overlay: prod
+    sync: {automated: {enabled: true}}
+  gpu-operator: {overlay: prod} # add

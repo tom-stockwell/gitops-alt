@@ -1,8 +1,8 @@
 # Tenants
 
 Stands in for a separate tenants repo; the `tenant-config` ApplicationSet
-(`bootstrap/appsets/tenant-config/`) reads it from this repo for now. Clusters get it by using
-the `base-with-tenants` base in `clusters/<cluster>/argocd/kustomization.yaml`.
+(`bootstrap/appsets/tenant-config/`) reads it from this repo for now. Clusters get it by
+being `workload` clusters (`clusterType` in their facts), whose base includes `tenant-config`.
 
 ```
 tenants/<tenant>/

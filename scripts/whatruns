@@ -10,6 +10,7 @@ usage() {
 Usage: scripts/whatruns [cluster...]
 
 Prints APP OVERLAY MIXINS AUTO-SYNC PRUNE SELF-HEAL WAVE per cluster (default: all clusters),
+headed by its clusterType/environment,
 sorted by wave then app. Reads the generated argocd.json files at the commit the cluster's
 cluster-config ApplicationSet is pinned to; clusters tracking main are read from the
 working tree. Clusters whose base includes tenant-config also list their tenants at that
@@ -38,11 +39,12 @@ for c in "${clusters[@]}"; do
   $first || echo
   first=false
   rev=$(appset_revision "$c" cluster-config)
+  kind="$(cluster_fact "$c" clusterType)/$(cluster_fact "$c" environment)"
   if [[ $rev == main ]]; then
-    echo "$c  (cluster-config @ main; showing working tree)"
+    echo "$c  [$kind]  (cluster-config @ main; showing working tree)"
   else
     git -C "$ROOT" cat-file -e "$rev^{commit}" 2>/dev/null || die "$c: pinned commit $rev not found locally; fetch it"
-    echo "$c  (cluster-config @ ${rev:0:12})"
+    echo "$c  [$kind]  (cluster-config @ ${rev:0:12})"
   fi
   {
     printf 'APP\tOVERLAY\tMIXINS\tAUTO-SYNC\tPRUNE\tSELF-HEAL\tWAVE\n'
@@ -63,13 +65,17 @@ for c in "${clusters[@]}"; do
   if cluster_appsets "$c" | grep -qxF tenant-config; then
     trev=$(appset_revision "$c" tenant-config)
     if [[ $trev == main ]]; then
-      tenants=$(for j in "$ROOT"/tenants/*/clusters/"$c"/argocd.json; do [[ -f $j ]] && basename "$(dirname "$(dirname "$(dirname "$j")")")"; done)
+      tenants=$(for j in "$ROOT"/tenants/*/clusters/"$c"/argocd.json; do
+        [[ -f $j ]] || continue
+        basename "$(dirname "$(dirname "$(dirname "$j")")")"
+      done)
       label="main; working tree"
     else
       git -C "$ROOT" cat-file -e "$trev^{commit}" 2>/dev/null || die "$c: pinned commit $trev not found locally; fetch it"
       tenants=$(git -C "$ROOT" ls-tree -r --name-only "$trev" -- tenants | sed -nE "s|^tenants/([^/]+)/clusters/$c/argocd.json\$|\1|p")
       label=${trev:0:12}
     fi
-    echo "  tenants (tenant-config @ $label): $(echo $tenants | sed 's/ /, /g')"
+    tenants=$(echo $tenants | sed 's/ /, /g')
+    echo "  tenants (tenant-config @ $label): ${tenants:-none}"
   fi
 done

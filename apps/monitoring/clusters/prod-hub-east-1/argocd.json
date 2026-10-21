@@ -1,0 +1,1 @@
+{"app":"monitoring","cluster":"prod-hub-east-1","mixins":["ha"],"overlay":"prod","sync":{"automated":{"enabled":false,"prune":true,"selfHeal":true},"wave":"20"}}

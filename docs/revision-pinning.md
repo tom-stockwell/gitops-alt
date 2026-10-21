@@ -20,7 +20,7 @@ root Application (per cluster, tracks main)
        + clusters/<cluster>/facts          cluster-facts ConfigMap (name)
        + bootstrap/revisions               replacements fill the placeholders
   → ApplicationSet cluster-config @ <its pin> → apps/*/clusters/<cluster>/argocd.json
-  → ApplicationSet tenant-config  @ <its pin> → tenants/*/clusters/<cluster>/argocd.json   (base-with-tenants)
+  → ApplicationSet tenant-config  @ <its pin> → tenants/*/clusters/<cluster>/argocd.json   (workload clusters)
 ```
 
 - `appset-revisions` and `cluster-facts` are local-config ConfigMaps. They feed the
@@ -35,10 +35,11 @@ root Application (per cluster, tracks main)
 
 ### Bases: which ApplicationSets a cluster runs
 
-`bootstrap/bases/` has one base per combination of ApplicationSets: `base` (cluster-config)
-and `base-with-tenants` (cluster-config + tenant-config). A cluster picks one in
-`clusters/<cluster>/argocd/kustomization.yaml`, and that line is the only difference between
-clusters' kustomizations (lint checks the rest).
+`bootstrap/bases/` has one base per cluster type: `hub` (cluster-config) and `workload`
+(cluster-config + tenant-config). A cluster's `clusters/<cluster>/argocd/kustomization.yaml`
+uses `bootstrap/bases/<clusterType>`, from the `clusterType` in its facts. That line is the
+only difference between clusters' kustomizations, and lint checks both that it matches the
+clusterType and that the rest is identical.
 
 Two things keep the bases simple:
 - **The defaults cover every ApplicationSet.** `bootstrap/appset-revisions/` (included by
@@ -54,7 +55,7 @@ The pins live in one `appset-revisions` ConfigMap, generated from one `revisions
 cluster, with a key per ApplicationSet:
 
 ```sh
-# clusters/prod-east-2/argocd/revisions.env
+# clusters/prod-workload-east-2/argocd/revisions.env
 cluster-config=3f2c9a1e4b7d6c5a8f9e0d1c2b3a4f5e6d7c8b9a
 tenant-config=9b8c7d6e5f4a3b2c1d0e9f8a7b6c5d4e3f2a1b0c
 ```

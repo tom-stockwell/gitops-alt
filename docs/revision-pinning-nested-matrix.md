@@ -47,7 +47,7 @@ cluster Secret (local)                       → .name, .server, .metadata.label
 One file per cluster on main, with a key per ApplicationSet. A missing key means main.
 
 ```yaml
-# clusters/prod-east-2/revisions.yaml
+# clusters/prod-workload-east-2/revisions.yaml
 # Commit each ApplicationSet runs on this cluster. Change with scripts/promote, one cluster per MR.
 cluster-config: 3f2c9a1e4b7d6c5a8f9e0d1c2b3a4f5e6d7c8b9a
 tenant-config: 9b8c7d6e5f4a3b2c1d0e9f8a7b6c5d4e3f2a1b0c
@@ -73,7 +73,7 @@ metadata:
     gitops.example.com/local: "true"
     gitops.example.com/tenants: "true"       # only on clusters that run tenant-config
 stringData:
-  name: prod-east-2
+  name: prod-workload-east-2
   server: https://kubernetes.default.svc
 ```
 

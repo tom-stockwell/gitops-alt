@@ -56,8 +56,29 @@ for c in "${clusters[@]}"; do
   for f in apps.yaml facts/kustomization.yaml facts/facts.yaml argocd/kustomization.yaml argocd/revisions.env; do
     [[ -f $d/$f ]] || err "$d: missing $f"
   done
+  [[ ! -f $d/apps.yaml ]] || [[ $(yq 'has("extends")' "$d/apps.yaml") == false ]] \
+    || err "$d/apps.yaml: 'extends' is no longer used; profiles come from the cluster's clusterType and environment"
   if [[ -f $d/facts/facts.yaml ]]; then
     [[ $(yq -r '.data.name // ""' "$d/facts/facts.yaml") == "$c" ]] || err "$d/facts/facts.yaml: data.name must be '$c'"
+    # clusterType and environment pick the profiles and the ApplicationSet base.
+    ctype=$(yq -r '.data.clusterType // ""' "$d/facts/facts.yaml")
+    envname=$(yq -r '.data.environment // ""' "$d/facts/facts.yaml")
+    if [[ -z $ctype ]]; then
+      err "$d/facts/facts.yaml: data.clusterType is not set"
+    else
+      [[ -f profiles/cluster-type/$ctype.yaml ]] || err "$d/facts/facts.yaml: clusterType '$ctype' has no profiles/cluster-type/$ctype.yaml"
+      [[ -d bootstrap/bases/$ctype ]] || err "$d/facts/facts.yaml: clusterType '$ctype' has no bootstrap/bases/$ctype/"
+      [[ ! -f $d/argocd/kustomization.yaml ]] || grep -qxF -- "- ../../../bootstrap/bases/$ctype" "$d/argocd/kustomization.yaml" \
+        || err "$d/argocd/kustomization.yaml: base must be ../../../bootstrap/bases/$ctype (its clusterType)"
+    fi
+    if [[ -n $ctype && -n $envname ]] && [[ ! $c =~ ^$envname-$ctype-[a-z0-9]+-[0-9]+$ ]]; then
+      err "$d: cluster name must be <environment>-<clusterType>-<region>-<id>, e.g. $envname-$ctype-east-1"
+    fi
+    if [[ -z $envname ]]; then
+      err "$d/facts/facts.yaml: data.environment is not set"
+    else
+      [[ -f profiles/environment/$envname.yaml ]] || err "$d/facts/facts.yaml: environment '$envname' has no profiles/environment/$envname.yaml"
+    fi
     [[ $(yq -r '.metadata.annotations["config.kubernetes.io/local-config"] // ""' "$d/facts/facts.yaml") == "true" ]] \
       || err "$d/facts/facts.yaml: missing annotation config.kubernetes.io/local-config: \"true\""
   fi

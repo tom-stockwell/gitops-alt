@@ -22,18 +22,19 @@ bootstrap/
     cluster-config/         one Application per apps/<app>/clusters/<cluster>/argocd.json
     tenant-config/          one Application per tenants/<tenant>/clusters/<cluster>/argocd.json
   appset-revisions/         default revision for every ApplicationSet (all main); local-config
-  bases/                    the combinations of ApplicationSets a cluster can run
-    base/                   cluster-config
-    base-with-tenants/      cluster-config + tenant-config
+  bases/<clusterType>/      the ApplicationSets each cluster type runs
+    hub/                    cluster-config
+    workload/               cluster-config + tenant-config
   revisions/                Component: fills every ApplicationSet's placeholders from
                             appset-revisions + cluster facts (skips ones not in the base)
 clusters/<cluster>/argocd/
-  kustomization.yaml        picks a base; otherwise identical for every cluster
+  kustomization.yaml        uses bootstrap/bases/<clusterType>; otherwise identical for every cluster
   revisions.env             this cluster's pins (overrides the defaults key by key)
 ```
 
 Run `kustomize build clusters/<cluster>/argocd` to see exactly what a cluster's root
-Application applies. To give a cluster tenants, change its base to `base-with-tenants`.
+Application applies. A cluster's base must match the `clusterType` in its facts (lint checks
+this); `make new-cluster ... TYPE=<clusterType>` sets both.
 
 ## Promotion and rollback
 
@@ -41,7 +42,7 @@ Each cluster pins a commit per ApplicationSet in `clusters/<cluster>/argocd/revi
 The ApplicationSet uses that commit both to find the apps and their settings and to fetch
 their manifests, so everything a cluster runs comes from one commit.
 
-- **Promote one cluster:** `make promote CLUSTER=prod-east-1 REF=main` (or a tag or SHA),
+- **Promote one cluster:** `make promote CLUSTER=prod-workload-east-1 REF=main` (or a tag or SHA),
   adding `APPSET=tenant-config` to pin tenants instead. This writes the full SHA. Commit it,
   open an MR, and the cluster moves when it merges. Then do the next cluster in its own MR.
 - **Roll back:** promote the previous SHA, or `git revert` the promote commit.

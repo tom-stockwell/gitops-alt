@@ -55,49 +55,60 @@ list_clusters() {
   done | LC_ALL=C sort
 }
 
-# A file containing `{}`, used in place of a missing profile.
-empty_yaml() {
-  if [[ -z ${_EMPTY_YAML:-} ]]; then
-    _EMPTY_YAML=$(mktemp)
-    cleanup_add "$_EMPTY_YAML"
-    echo '{}' >"$_EMPTY_YAML"
-  fi
-  echo "$_EMPTY_YAML"
+# cluster_fact <cluster> <key>: data.<key> from clusters/<cluster>/facts/facts.yaml (empty if unset).
+cluster_fact() {
+  local f="$ROOT/clusters/$1/facts/facts.yaml"
+  [[ -f $f ]] || die "clusters/$1/facts/facts.yaml not found"
+  K=$2 yq -r '.data[strenv(K)] // ""' "$f"
 }
 
-# profile_file <cluster>: path of the profile the cluster extends, or the empty file if none.
-profile_file() {
-  local c=$1 apps="$ROOT/clusters/$1/apps.yaml" profile
-  [[ -f $apps ]] || die "clusters/$c/apps.yaml not found"
-  profile=$(yq '.extends // ""' "$apps")
-  if [[ -z $profile ]]; then
-    empty_yaml
-    return
-  fi
-  [[ -f $ROOT/profiles/$profile.yaml ]] || die "clusters/$c/apps.yaml extends '$profile' but profiles/$profile.yaml does not exist"
-  echo "$ROOT/profiles/$profile.yaml"
+# _layer_profile <cluster> <fact> <profiles subdir>: the profile file a cluster fact selects.
+_layer_profile() {
+  local c=$1 key=$2 dir=$3 v
+  v=$(cluster_fact "$c" "$key") || exit 1
+  [[ -n $v ]] || die "clusters/$c/facts/facts.yaml: data.$key is not set"
+  [[ -f $ROOT/profiles/$dir/$v.yaml ]] || die "clusters/$c: $key '$v' has no profiles/$dir/$v.yaml"
+  echo "$ROOT/profiles/$dir/$v.yaml"
 }
 
-# resolved_apps <cluster>: merged app map (profile + cluster, shallow per-app replace, null removes) as JSON.
+# cluster_type_profile / environment_profile <cluster>: the cluster's layer profiles.
+cluster_type_profile() { _layer_profile "$1" clusterType cluster-type; }
+environment_profile() { _layer_profile "$1" environment environment; }
+
+# resolved_apps <cluster>: the cluster's app map as JSON. Layers, each a shallow per-app replace:
+#   1. profiles/cluster-type/<clusterType>.yaml selects apps;
+#   2. profiles/environment/<environment>.yaml replaces entries for selected apps only (never
+#      adds; null removes);
+#   3. clusters/<cluster>/apps.yaml replaces, adds, or removes (null).
 resolved_apps() {
-  local c=$1 pfile
-  pfile=$(profile_file "$c") || exit 1
-  yq eval-all -o=json '(select(fi==0).apps // {}) + (select(fi==1).apps // {})
-                       | with_entries(select(.value != null))' "$pfile" "$ROOT/clusters/$c/apps.yaml"
+  local c=$1 tfile efile
+  [[ -f $ROOT/clusters/$c/apps.yaml ]] || die "clusters/$c/apps.yaml not found"
+  tfile=$(cluster_type_profile "$c") || exit 1
+  efile=$(environment_profile "$c") || exit 1
+  TFILE=$tfile EFILE=$efile CFILE="$ROOT/clusters/$c/apps.yaml" yq -n -o=json '
+      (load(strenv(TFILE)).apps // {}) as $t
+    | (load(strenv(EFILE)).apps // {}) as $e
+    | (load(strenv(CFILE)).apps // {}) as $c
+    | ($t | to_entries | map(.key as $k | (select($e | has($k)) | .value = $e[$k]) // .) | from_entries)
+      + $c
+    | with_entries(select(.value != null))'
 }
 
-# resolve_sync <app> <cluster>: built-in defaults * argocd.yaml sync * profile entry sync * cluster entry sync,
-# as compact JSON.
+# resolve_sync <app> <cluster>: deep merge, later wins, as compact JSON:
+#   built-in defaults * apps/<app>/argocd.yaml sync * cluster-type entry sync
+#   * environment entry sync (only if the cluster type selects the app) * cluster entry sync.
 resolve_sync() {
-  local app=$1 c=$2 pfile defaults="$ROOT/apps/$1/argocd.yaml"
+  local app=$1 c=$2 tfile efile defaults="$ROOT/apps/$1/argocd.yaml"
   [[ -f $defaults ]] || die "apps/$app/argocd.yaml not found"
-  pfile=$(profile_file "$c") || exit 1
-  APP=$app yq eval-all -o=json -I=0 '
-      {"automated": {"enabled": true, "prune": true, "selfHeal": true}}
-    * (select(fi==0).sync // {})
-    * (select(fi==1).apps[strenv(APP)].sync // {})
-    * (select(fi==2).apps[strenv(APP)].sync // {})' \
-    "$defaults" "$pfile" "$ROOT/clusters/$c/apps.yaml"
+  tfile=$(cluster_type_profile "$c") || exit 1
+  efile=$(environment_profile "$c") || exit 1
+  APP=$app DFILE=$defaults TFILE=$tfile EFILE=$efile CFILE="$ROOT/clusters/$c/apps.yaml" yq -n -o=json -I=0 '
+      (load(strenv(TFILE)).apps // {}) as $t
+    | {"automated": {"enabled": true, "prune": true, "selfHeal": true}}
+    * (load(strenv(DFILE)).sync // {})
+    * ($t[strenv(APP)].sync // {})
+    * ((select($t | has(strenv(APP))) | load(strenv(EFILE)).apps[strenv(APP)].sync) // {})
+    * (load(strenv(CFILE)).apps[strenv(APP)].sync // {})'
 }
 
 # env_keys <file>: keys of a KEY=value file (kustomize envs format), in order.

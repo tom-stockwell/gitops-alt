@@ -1,0 +1,18 @@
+# This cluster's ApplicationSets, synced by its root Application (scripts/bootstrap-root).
+# Identical for every cluster except the base, which must be bootstrap/bases/<clusterType>.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+- ../../../bootstrap/bases/workload
+components:
+- ../facts
+- ../../../bootstrap/revisions
+generatorOptions:
+  disableNameSuffixHash: true
+  annotations:
+    config.kubernetes.io/local-config: "true"
+configMapGenerator:
+- name: appset-revisions
+  behavior: merge
+  envs:
+  - revisions.env

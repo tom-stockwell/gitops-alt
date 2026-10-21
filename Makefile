@@ -18,8 +18,8 @@ whatruns:
 	scripts/whatruns
 
 new-cluster:
-	@test -n "$(NAME)" -a -n "$(FROM)" || { echo "usage: make new-cluster NAME=<name> FROM=<existing> [DOMAIN=<domain>]" >&2; exit 1; }
-	scripts/new-cluster $(NAME) --from $(FROM) $(if $(DOMAIN),--domain $(DOMAIN))
+	@test -n "$(NAME)" -a -n "$(FROM)" || { echo "usage: make new-cluster NAME=<name> FROM=<existing> [DOMAIN=<domain>] [TYPE=<clusterType>] [ENVIRONMENT=<environment>]" >&2; exit 1; }
+	scripts/new-cluster $(NAME) --from $(FROM) $(if $(DOMAIN),--domain $(DOMAIN)) $(if $(TYPE),--type $(TYPE)) $(if $(ENVIRONMENT),--environment $(ENVIRONMENT))
 
 promote:
 	@test -n "$(CLUSTER)" -a -n "$(REF)" || { echo "usage: make promote CLUSTER=<cluster> REF=<ref> [APPSET=<name>]" >&2; exit 1; }

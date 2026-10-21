@@ -1,0 +1,1 @@
+{"app":"cert-manager","cluster":"qa-workload-east-1","mixins":[],"overlay":"qa","sync":{"automated":{"enabled":true,"prune":true,"selfHeal":true},"wave":"0"}}

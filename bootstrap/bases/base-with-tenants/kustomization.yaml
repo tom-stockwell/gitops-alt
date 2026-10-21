@@ -1,6 +1,0 @@
-# ApplicationSets for a cluster that runs cluster config (apps/) and tenant config (tenants/).
-apiVersion: kustomize.config.k8s.io/v1beta1
-kind: Kustomization
-resources:
-- ../base
-- ../../appsets/tenant-config

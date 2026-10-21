@@ -1,0 +1,1 @@
+{"app":"monitoring","cluster":"prod-workload-east-2","mixins":[],"overlay":"prod","sync":{"automated":{"enabled":true,"prune":true,"selfHeal":true},"wave":"20"}}

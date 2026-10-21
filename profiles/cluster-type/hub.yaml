@@ -1,0 +1,5 @@
+# Apps every hub cluster runs. Selection: profiles/environment/<environment>.yaml
+# configures them (overlay, mixins, sync); clusters/<cluster>/apps.yaml has the exceptions.
+apps:
+  cert-manager: {}
+  monitoring: {}
