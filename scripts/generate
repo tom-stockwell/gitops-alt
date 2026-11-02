@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Generate the joins (apps/<app>/clusters/<cluster>/) from each cluster's profiles and apps.yaml.
+# Generate the joins (apps/<app>/clusters/<cluster>/) from the profiles each app has.
 set -euo pipefail
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 # shellcheck source=lib.sh
@@ -9,11 +9,10 @@ usage() {
   cat <<EOF
 Usage: scripts/generate [--check] [cluster...]
 
-Writes apps/<app>/clusters/<cluster>/{kustomization.yaml,argocd.json} for every app
-resolved for the cluster (profiles/cluster-type/<clusterType>.yaml, then
-profiles/environment/<environment>.yaml, then clusters/<cluster>/apps.yaml), and deletes
-generated joins for apps no longer assigned. Default: all clusters, which also deletes
-generated joins for clusters that no longer exist.
+Writes apps/<app>/clusters/<cluster>/{kustomization.yaml,argocd.json} for every app with
+a profile (apps/<app>/profiles/<name>/) for the cluster's <environment>, <clusterType>,
+<environment>-<clusterType> or name, and deletes generated joins for apps no longer selected.
+Default: all clusters, which also deletes generated joins for clusters that no longer exist.
 
   --check   generate into a temp copy and diff against the working tree; exit 1 on
             any difference. Never modifies the tree.
@@ -61,21 +60,26 @@ done
 work=$(mktemp -d)
 cleanup_add "$work"
 
+mapfile -t all_apps < <(list_apps)
+
 # Pass 1: resolve and validate everything before touching the tree.
+# $work/<cluster>.apps: selected apps; $work/<cluster>.<app>.profiles: its profiles, in order.
 for c in "${clusters[@]}"; do
-  resolved_apps "$c" >"$work/$c.json"
-  mapfile -t apps < <(yq -r 'keys | .[]' "$work/$c.json")
-  for app in "${apps[@]}"; do
-    [[ -d $ROOT/apps/$app ]] || die "$c: app '$app': apps/$app/ does not exist"
-    [[ -f $ROOT/apps/$app/argocd.yaml ]] || die "$c: app '$app': apps/$app/argocd.yaml does not exist"
-    overlay=$(APP=$app yq -r '.[strenv(APP)].overlay // ""' "$work/$c.json")
-    [[ -n $overlay ]] || die "$c: app '$app': no overlay set"
-    [[ -d $ROOT/apps/$app/overlays/$overlay ]] || die "$c: app '$app': apps/$app/overlays/$overlay/ does not exist"
-    mapfile -t mixins < <(APP=$app yq -r '.[strenv(APP)].mixins // [] | .[]' "$work/$c.json")
-    for m in "${mixins[@]+"${mixins[@]}"}"; do
-      [[ -d $ROOT/apps/$app/mixins/$m ]] || die "$c: app '$app': apps/$app/mixins/$m/ does not exist"
+  : >"$work/$c.apps"
+  for app in "${all_apps[@]}"; do
+    app_profiles "$app" "$c" >"$work/$c.$app.profiles"
+    [[ -s $work/$c.$app.profiles ]] || continue
+    echo "$app" >>"$work/$c.apps"
+    [[ -d $ROOT/apps/$app/base ]] || die "$c: app '$app': apps/$app/base/ does not exist"
+    mapfile -t profiles <"$work/$c.$app.profiles"
+    for p in "${profiles[@]}"; do
+      [[ -f $ROOT/apps/$app/profiles/$p/kustomization.yaml ]] \
+        || die "$c: app '$app': apps/$app/profiles/$p/ has no kustomization.yaml"
     done
-    sync=$(resolve_sync "$app" "$c")
+    pc=$ROOT/apps/$app/profiles/$PER_CLUSTER_PROFILE
+    [[ ! -d $pc || -f $pc/kustomization.yaml ]] \
+      || die "$c: app '$app': apps/$app/profiles/$PER_CLUSTER_PROFILE/ has no kustomization.yaml"
+    sync=$(resolve_sync "$app")
     SYNC=$sync yq -e -n 'env(SYNC) | [
         (.automated.enabled | tag) == "!!bool",
         (.automated.prune | tag) == "!!bool",
@@ -84,6 +88,7 @@ for c in "${clusters[@]}"; do
       || die "$c: app '$app': resolved sync needs boolean automated.{enabled,prune,selfHeal} and a 'wave', got $sync"
     echo "$sync" >"$work/$c.$app.sync.json"
   done
+  mapfile -t apps <"$work/$c.apps"
   # Stale joins must carry the generated header before we delete them.
   for dir in "$ROOT"/apps/*/clusters/"$c"/; do
     [[ -d $dir ]] || continue
@@ -117,7 +122,7 @@ for dir in "${orphans[@]+"${orphans[@]}"}"; do
   echo "removed apps/$app/clusters/$(basename "$dir") (cluster no longer exists)"
 done
 for c in "${clusters[@]}"; do
-  mapfile -t apps < <(yq -r 'keys | .[]' "$work/$c.json")
+  mapfile -t apps <"$work/$c.apps"
   for dir in "$ROOT"/apps/*/clusters/"$c"/; do
     [[ -d $dir ]] || continue
     app=$(basename "$(dirname "$(dirname "$dir")")")
@@ -130,28 +135,32 @@ for c in "${clusters[@]}"; do
   for app in "${apps[@]}"; do
     out=$ROOT/apps/$app/clusters/$c
     mkdir -p "$out"
-    overlay=$(APP=$app yq -r '.[strenv(APP)].overlay' "$work/$c.json")
-    mapfile -t mixins < <(APP=$app yq -r '.[strenv(APP)].mixins // [] | .[]' "$work/$c.json")
+    mapfile -t profiles <"$work/$c.$app.profiles"
+    # Order: facts ConfigMap; <env>, <type>, <env>-<type>; per-cluster (the app's replacements
+    # from the facts, so they fill placeholders any of those add); <cluster> last, so it can
+    # override anything.
+    components=(../../../../clusters/$c/facts)
+    for p in "${profiles[@]}"; do
+      [[ $p == "$c" ]] || components+=("../../profiles/$p")
+    done
+    [[ -d $ROOT/apps/$app/profiles/$PER_CLUSTER_PROFILE ]] && components+=("../../profiles/$PER_CLUSTER_PROFILE")
+    [[ ${profiles[-1]} == "$c" ]] && components+=("../../profiles/$c")
     {
       echo "$GENERATED_PREFIX for clusters/$c — DO NOT EDIT."
       echo "apiVersion: kustomize.config.k8s.io/v1beta1"
       echo "kind: Kustomization"
       echo "resources:"
-      echo "- ../../overlays/$overlay"
+      echo "- ../../base"
       echo "components:"
-      for m in "${mixins[@]+"${mixins[@]}"}"; do
-        echo "- ../../mixins/$m"
-      done
-      echo "- ../../../../clusters/$c/facts"
+      printf -- '- %s\n' "${components[@]}"
     } >"$out/kustomization.yaml"
-    APP=$app CLUSTER=$c OVERLAY=$overlay \
-    MIXINS=$(APP=$app yq -o=json -I=0 '.[strenv(APP)].mixins // []' "$work/$c.json") \
+    APP=$app CLUSTER=$c \
+    PROFILES=$(printf '%s\n' "${profiles[@]}") \
     SYNC=$(cat "$work/$c.$app.sync.json") \
       yq -n -o=json -I=0 '{
         "app": strenv(APP),
         "cluster": strenv(CLUSTER),
-        "overlay": strenv(OVERLAY),
-        "mixins": env(MIXINS),
+        "profiles": (strenv(PROFILES) | split("\n")),
         "sync": (env(SYNC) | .wave |= tostring)
       } | sort_keys(..)' >"$out/argocd.json"
     echo "wrote apps/$app/clusters/$c"

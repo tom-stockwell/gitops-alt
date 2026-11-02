@@ -1,0 +1,4 @@
+# No changes: selects cert-manager for qa clusters, which use the base as is.
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+resources: []   # kustomize rejects a Component with no fields

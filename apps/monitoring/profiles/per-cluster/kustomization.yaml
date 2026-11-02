@@ -1,0 +1,15 @@
+# The app's replacements from the cluster's facts (clusters/<cluster>/facts). Included in
+# every cluster overlay for this app; never selects the app for a cluster.
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+replacements:
+- source: {kind: ConfigMap, name: cluster-facts, fieldPath: data.domain}
+  targets:
+  - select: {kind: Route, name: monitoring}
+    fieldPaths: [spec.host]
+    options: {delimiter: ".", index: 1}
+- source: {kind: ConfigMap, name: cluster-facts, fieldPath: data.name}
+  targets:
+  - select: {kind: Deployment, name: monitoring}
+    fieldPaths:
+    - spec.template.spec.containers.[name=monitoring].env.[name=CLUSTER_NAME].value

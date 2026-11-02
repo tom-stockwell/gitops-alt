@@ -1,1 +1,1 @@
-{"app":"logging","cluster":"prod-workload-east-1","mixins":[],"overlay":"prod","sync":{"automated":{"enabled":true,"prune":true,"selfHeal":true},"wave":"10"}}
+{"app":"logging","cluster":"prod-workload-east-1","profiles":["prod-workload"],"sync":{"automated":{"enabled":true,"prune":true,"selfHeal":true},"wave":"10"}}

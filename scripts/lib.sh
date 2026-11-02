@@ -62,53 +62,46 @@ cluster_fact() {
   K=$2 yq -r '.data[strenv(K)] // ""' "$f"
 }
 
-# _layer_profile <cluster> <fact> <profiles subdir>: the profile file a cluster fact selects.
-_layer_profile() {
-  local c=$1 key=$2 dir=$3 v
-  v=$(cluster_fact "$c" "$key") || exit 1
-  [[ -n $v ]] || die "clusters/$c/facts/facts.yaml: data.$key is not set"
-  [[ -f $ROOT/profiles/$dir/$v.yaml ]] || die "clusters/$c: $key '$v' has no profiles/$dir/$v.yaml"
-  echo "$ROOT/profiles/$dir/$v.yaml"
+# PER_CLUSTER_PROFILE: apps/<app>/profiles/<this>/ holds the app's replacements from the cluster
+# facts. It is in every cluster overlay for the app, but no cluster matches it, so it never selects.
+PER_CLUSTER_PROFILE=per-cluster
+
+# cluster_profiles <cluster>: the profile names a cluster matches, in the order they apply:
+#   <environment>, <clusterType>, <environment>-<clusterType>, <cluster>.
+cluster_profiles() {
+  local c=$1 ctype envname
+  ctype=$(cluster_fact "$c" clusterType) || exit 1
+  envname=$(cluster_fact "$c" environment) || exit 1
+  [[ -n $ctype ]] || die "clusters/$c/facts/facts.yaml: data.clusterType is not set"
+  [[ -n $envname ]] || die "clusters/$c/facts/facts.yaml: data.environment is not set"
+  printf '%s\n' "$envname" "$ctype" "$envname-$ctype" "$c"
 }
 
-# cluster_type_profile / environment_profile <cluster>: the cluster's layer profiles.
-cluster_type_profile() { _layer_profile "$1" clusterType cluster-type; }
-environment_profile() { _layer_profile "$1" environment environment; }
-
-# resolved_apps <cluster>: the cluster's app map as JSON. Layers, each a shallow per-app replace:
-#   1. profiles/cluster-type/<clusterType>.yaml selects apps;
-#   2. profiles/environment/<environment>.yaml replaces entries for selected apps only (never
-#      adds; null removes);
-#   3. clusters/<cluster>/apps.yaml replaces, adds, or removes (null).
-resolved_apps() {
-  local c=$1 tfile efile
-  [[ -f $ROOT/clusters/$c/apps.yaml ]] || die "clusters/$c/apps.yaml not found"
-  tfile=$(cluster_type_profile "$c") || exit 1
-  efile=$(environment_profile "$c") || exit 1
-  TFILE=$tfile EFILE=$efile CFILE="$ROOT/clusters/$c/apps.yaml" yq -n -o=json '
-      (load(strenv(TFILE)).apps // {}) as $t
-    | (load(strenv(EFILE)).apps // {}) as $e
-    | (load(strenv(CFILE)).apps // {}) as $c
-    | ($t | to_entries | map(.key as $k | (select($e | has($k)) | .value = $e[$k]) // .) | from_entries)
-      + $c
-    | with_entries(select(.value != null))'
+# app_profiles <app> <cluster>: the app's profiles (apps/<app>/profiles/<name>/) that match the
+# cluster, in order. Empty if none match, which means the app doesn't run there.
+app_profiles() {
+  local app=$1 c=$2 p names
+  names=$(cluster_profiles "$c") || exit 1
+  for p in $names; do
+    [[ -d $ROOT/apps/$app/profiles/$p ]] && echo "$p"
+  done
+  return 0
 }
 
-# resolve_sync <app> <cluster>: deep merge, later wins, as compact JSON:
-#   built-in defaults * apps/<app>/argocd.yaml sync * cluster-type entry sync
-#   * environment entry sync (only if the cluster type selects the app) * cluster entry sync.
+# list_apps: app names (dirs under apps/), sorted.
+list_apps() {
+  local d
+  for d in "$ROOT"/apps/*/; do
+    [[ -d $d ]] && basename "$d"
+  done | LC_ALL=C sort
+}
+
+# resolve_sync <app>: built-in defaults deep-merged with apps/<app>/argocd.yaml sync, as compact JSON.
 resolve_sync() {
-  local app=$1 c=$2 tfile efile defaults="$ROOT/apps/$1/argocd.yaml"
+  local app=$1 defaults="$ROOT/apps/$1/argocd.yaml"
   [[ -f $defaults ]] || die "apps/$app/argocd.yaml not found"
-  tfile=$(cluster_type_profile "$c") || exit 1
-  efile=$(environment_profile "$c") || exit 1
-  APP=$app DFILE=$defaults TFILE=$tfile EFILE=$efile CFILE="$ROOT/clusters/$c/apps.yaml" yq -n -o=json -I=0 '
-      (load(strenv(TFILE)).apps // {}) as $t
-    | {"automated": {"enabled": true, "prune": true, "selfHeal": true}}
-    * (load(strenv(DFILE)).sync // {})
-    * ($t[strenv(APP)].sync // {})
-    * ((select($t | has(strenv(APP))) | load(strenv(EFILE)).apps[strenv(APP)].sync) // {})
-    * (load(strenv(CFILE)).apps[strenv(APP)].sync // {})'
+  DFILE=$defaults yq -n -o=json -I=0 \
+    '{"automated": {"enabled": true, "prune": true, "selfHeal": true}} * (load(strenv(DFILE)).sync // {})'
 }
 
 # env_keys <file>: keys of a KEY=value file (kustomize envs format), in order.

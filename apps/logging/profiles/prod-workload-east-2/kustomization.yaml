@@ -1,0 +1,7 @@
+# Canary of the release candidate.
+# owner: platform-team
+# reason: canary of logging 2.4.0-rc1 before prod rollout
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+components:
+- ../../components/canary

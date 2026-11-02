@@ -1,0 +1,11 @@
+# Runs without HA.
+# owner: platform-team
+# reason: not enough capacity for HA monitoring until the node pool is resized
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+patches:
+- target: {kind: Deployment, name: monitoring}
+  patch: |
+    - op: replace
+      path: /spec/replicas
+      value: 1

@@ -1,4 +1,4 @@
-# Default Argo CD settings for this app. Overridable per profile/cluster via `sync:`.
+# Argo CD settings for this app on every cluster (the only place they are set).
 # sync.automated.{enabled,prune,selfHeal} default to true when not set.
 sync:
   wave: "10"

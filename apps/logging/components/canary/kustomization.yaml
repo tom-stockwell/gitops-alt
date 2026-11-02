@@ -1,0 +1,6 @@
+# The release candidate image.
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+images:
+- name: quay.io/example/logging
+  newTag: 2.4.0-rc1

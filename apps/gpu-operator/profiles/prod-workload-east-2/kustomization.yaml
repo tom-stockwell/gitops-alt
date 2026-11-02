@@ -1,0 +1,6 @@
+# No changes: selects gpu-operator for prod-workload-east-2, the only cluster with GPUs.
+# owner: platform-team
+# reason: only cluster with GPU nodes
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+resources: []

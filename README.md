@@ -18,21 +18,18 @@ is exactly what Argo CD applies on that cluster.
 
 ```
 apps/<app>/
-  argocd.yaml              default Argo settings (sync.wave, sync.automated.*)
+  argocd.yaml              Argo settings (sync.wave, sync.automated.*), the same on every cluster
   base/                    the app
-  overlays/<intent>/       named by intent: prod, qa, prod-abc, … (not by cluster)
-  mixins/<name>/           optional Components: canary, ha, …
+  components/<name>/       modular Components, one concern each (resources-large, canary, …); used by profiles
+  profiles/<profile>/      Components that select the app for clusters and configure it (below)
+    per-cluster/           the app's replacements from cluster facts (optional)
   clusters/<cluster>/      GENERATED join + resolved argocd.json — never edit
 clusters/<cluster>/
   facts/                   Component (identical for every cluster) + facts.yaml: name, domain,
                            clusterType, environment; local-config, never emitted
-  apps.yaml                this cluster's exceptions to its profiles
   argocd/                  what the cluster's root Application syncs: its ApplicationSets
     kustomization.yaml     uses bootstrap/bases/<clusterType>
     revisions.env          the commit each ApplicationSet is pinned to (scripts/promote)
-profiles/
-  cluster-type/<type>.yaml which apps each cluster type runs
-  environment/<env>.yaml   how apps are configured in each environment
 tenants/<tenant>/          tenant config (stands in for a separate tenants repo; tenants/README.md)
 bootstrap/                 ApplicationSets, bases, revisions Component, bootstrap steps (bootstrap/README.md)
 docs/                      design notes (revision-pinning.md, revision-pinning-nested-matrix.md)
@@ -40,12 +37,11 @@ scripts/                   generate, lint, render, render-all, diff, new-cluster
 tests/run.sh               acceptance tests (make test)
 ```
 
-**Never edit `apps/*/clusters/*`.** Change a profile or `clusters/<cluster>/apps.yaml` and
-run `make generate`. CI fails if the joins are out of date (`make check`).
+**Never edit `apps/*/clusters/*`.** Add or change a profile and run `make generate`. CI fails
+if the joins are out of date (`make check`).
 
-A join holds only one overlay, zero or more mixins, and the cluster facts (always last).
-It never holds patches. Facts are values only; release or canary state belongs in
-mixins and overlays.
+A join (the cluster overlay) holds the app's `base`, the cluster facts, every profile of the
+app that matches the cluster, and `profiles/per-cluster`. It never holds patches.
 
 ## Cluster types and environments
 
@@ -62,15 +58,78 @@ data:
   environment: prod
 ```
 
-- **Which ApplicationSets run** follows the clusterType: the cluster's
-  `argocd/kustomization.yaml` uses `bootstrap/bases/<clusterType>`. `hub` runs cluster-config;
-  `workload` runs cluster-config and tenant-config. Lint checks the base matches.
-- **Which apps are generated, and how they're configured,** come from
-  `profiles/cluster-type/<clusterType>.yaml`, then `profiles/environment/<environment>.yaml`,
-  then the cluster's `apps.yaml` (see the rules below).
+**Which ApplicationSets run** follows the clusterType: the cluster's
+`argocd/kustomization.yaml` uses `bootstrap/bases/<clusterType>`. `hub` runs cluster-config;
+`workload` runs cluster-config and tenant-config. Lint checks the base matches.
 
-Adding a cluster type means a profile and a base; adding an environment means a profile
-(and the overlays its entries name).
+## Profiles: which apps run where, and how
+
+Each app has kustomize Components under `apps/<app>/profiles/`, named after cluster facts.
+A cluster matches these names:
+
+| Profile | Example (`prod-hub-east-1`) |
+|---|---|
+| `<environment>` | `prod` |
+| `<clusterType>` | `hub` |
+| `<environment>-<clusterType>` | `prod-hub` |
+| `<cluster>` | `prod-hub-east-1` |
+
+**An app runs on a cluster if it has at least one profile the cluster matches.** For
+example, `prod-hub-east-1` gets every app with a `prod`, `hub`, `prod-hub` or
+`prod-hub-east-1` profile. No list of apps per cluster exists. Add a profile to put an app on
+clusters, and delete it to take the app off. Apps run on sets of clusters: if some clusters
+need an app and others don't, they should be different profiles (clusterType or environment).
+An `<environment>` profile selects the app for every cluster type in that environment, so an
+app that only runs on workload clusters uses `prod-workload`/`qa-workload` rather than
+`prod`/`qa` (see `apps/logging/profiles/`).
+
+**`<cluster>` profiles are one-off exceptions and should not normally exist.** Give each one
+`# owner:` and `# reason:` comments at the top of its `kustomization.yaml`. They should generally
+only be used if an app needs per-cluster changes that can't be implemented using replacements
+from cluster facts.
+`apps/gpu-operator/profiles/prod-workload-east-2/` is one example.
+
+A profile with nothing to change still has to be a valid Component. kustomize rejects one
+with no fields, so give it `resources: []` (see `apps/cert-manager/profiles/qa/`).
+
+**`apps/<app>/profiles/per-cluster/`** holds the app's replacements from the cluster facts (route
+hosts, cluster names, …). It is included in every cluster overlay for the app, but no cluster
+matches its name, so it never selects the app. It's optional. The cluster's `facts/` Component only supplies the
+`cluster-facts` ConfigMap. The replacements that use it live with the app, so each app
+decides which of its fields come from facts.
+
+Components in a cluster overlay, in order:
+
+1. `clusters/<cluster>/facts`: the facts ConfigMap
+2. `profiles/<environment>`, `profiles/<clusterType>`, `profiles/<environment>-<clusterType>`
+   (those that exist)
+3. `profiles/per-cluster`: after those, so it fills placeholders they add
+4. `profiles/<cluster>`: last, so it can override anything
+
+Lint warns about profiles that match no cluster (usually a typo).
+
+### Components
+
+`apps/<app>/components/<name>/` are small, single-purpose Components: one patch or setting
+each, named for what they do (`replicas-3`, `ha`, `canary`, `issuer-letsencrypt-prod`). Profiles
+compose them with `components: [../../components/<name>]`, so a change shared by several
+profiles is made once. For example, logging's `qa-workload` and `prod-workload-east-2` profiles
+both use `components/canary`. A component never selects an app and is never listed in a
+cluster overlay directly. Lint warns about components that no profile uses. An app directory
+may only contain `argocd.yaml`, `base/`, `components/`, `profiles/` and `clusters/`.
+
+### Argo CD settings
+
+Argo CD settings are set per app only, in `apps/<app>/argocd.yaml`, and are the same on every
+cluster the app runs on. Profiles can't change them (lint rejects an `argocd.yaml` in a
+profile). On top of built-in defaults (`sync.automated.enabled`, `prune` and `selfHeal` all
+`true`), `argocd.yaml` sets `sync.wave` (required) and optionally `sync.automated.*`, e.g.
+`sync: {automated: {enabled: false}}` for manual sync.
+
+The result is written to `apps/<app>/clusters/<cluster>/argocd.json` (app, cluster, the
+matching profiles, sync), which the ApplicationSet reads. Every key is always present in that
+file, so every Application gets the full `spec.syncPolicy.automated` block with explicit
+`enabled`, `prune` and `selfHeal`.
 
 ## Which commit a cluster runs
 
@@ -79,52 +138,21 @@ Each cluster pins a commit per ApplicationSet in `clusters/<cluster>/argocd/revi
 through an MR (`make promote`). Pin and roll out clusters one at a time. See
 [docs/revision-pinning.md](docs/revision-pinning.md).
 
-## Override rules
-
-**App lists** are resolved in three layers. At each layer an entry **replaces** the previous
-entry for that app entirely (shallow, not a deep merge), and `<app>: null` removes it:
-
-1. `profiles/cluster-type/<clusterType>.yaml` selects the apps.
-2. `profiles/environment/<environment>.yaml` replaces entries, **only for apps the cluster
-   type selected**. Listing an app here never adds it to a cluster, so the prod profile can
-   configure `logging` without putting it on hubs.
-3. `clusters/<cluster>/apps.yaml` replaces entries, adds apps (any key) or removes them.
-
-Every resolved app must name its `overlay` explicitly; there is no default.
-
-**Argo CD settings** are resolved per app in this order, later wins, deep merge:
-
-1. `apps/<app>/argocd.yaml` `sync`
-2. the cluster-type entry's `sync`
-3. the environment entry's `sync` (only for apps the cluster type selected)
-4. the cluster entry's `sync`
-
-Before step 1 come the built-in defaults: `sync.automated.enabled`, `prune` and `selfHeal`
-are all `true`. Set `enabled: false` to turn off automated sync for an app, for example
-`sync: {automated: {enabled: false}}`. `sync.wave` has no default, so every app's `argocd.yaml` must set it.
-
-The result is written to `apps/<app>/clusters/<cluster>/argocd.json`, which the
-ApplicationSet reads. Every key is always present in that file, so every Application gets the full
-`spec.syncPolicy.automated` block with explicit `enabled`, `prune` and `selfHeal`.
-
 ## Common tasks
 
 | Task | How |
 |---|---|
 | See what runs where | `make whatruns` (or `scripts/whatruns <cluster>`): reads each cluster's pinned commit |
 | Preview the rendered effect of your change | `make diff` (renders `origin/main` and your working tree; writes `rendered/manifests.diff`) |
-| Add an app | Create `apps/<app>/{argocd.yaml,base/,overlays/<intent>/}`, select it in a cluster-type profile (configure it per environment) or add it in a cluster's `apps.yaml`, `make generate` |
+| Add an app | Create `apps/<app>/{argocd.yaml,base/}`, at least one profile under `profiles/` (built from `components/`), and `profiles/per-cluster/` if it uses cluster facts. Then `make generate` |
 | Add a cluster | `make new-cluster NAME=prod-workload-west-1 FROM=prod-workload-east-1 DOMAIN=apps.west1.example.com` (optionally `TYPE=hub ENVIRONMENT=qa`), then follow `bootstrap/README.md` |
-| Change an app for a whole environment | Edit its entry in `profiles/environment/<env>.yaml`, `make generate` |
-| Retarget an overlay on one cluster | In `clusters/<c>/apps.yaml`: `logging: {overlay: prod-abc}`, `make generate` |
-| Run a canary | Add a mixin (e.g. `apps/logging/mixins/canary`) and in the cluster's `apps.yaml`: `logging: {overlay: prod, mixins: [canary], sync: {automated: {enabled: false}}}` |
-| Remove an app from one cluster | In `clusters/<c>/apps.yaml`: `monitoring: null`, `make generate` |
+| Put an app on a set of clusters | Add `apps/<app>/profiles/<environment\|clusterType\|environment-clusterType>/`, `make generate` |
+| Take an app off a set of clusters | Delete the profile that selects it there, `make generate` |
+| Change an app for an environment | Edit `apps/<app>/profiles/<env>/` (or `<env>-<clusterType>/`), `make generate` |
+| Change Argo CD settings for an app | Edit `apps/<app>/argocd.yaml` (applies on every cluster), `make generate` |
+| Run a canary on one cluster | `apps/<app>/profiles/<cluster>/` with the canary change (see `apps/logging/profiles/prod-workload-east-2/`). Delete it afterwards |
 | Give a cluster tenants | Make it a `workload` cluster, add `tenants/<tenant>/clusters/<c>/` (see `tenants/README.md`) |
-| One-off cluster exception | An overlay named after the cluster is allowed but must have `metadata.annotations.owner` and `reason`; `make check` lists them as warnings |
 | Roll out a change | Merge it to main, then `make promote CLUSTER=<c> REF=main` and open an MR, one cluster at a time. Roll back by promoting the previous SHA. See `bootstrap/README.md` |
-
-Since each layer's entry replaces the previous one, repeat the overlay and any mixins you
-want to keep (prod-workload-east-2's `monitoring` drops the prod profile's `ha` this way).
 
 ## Tooling
 
@@ -134,9 +162,8 @@ and is used by `scripts/diff` when installed. `make check` runs `generate --chec
 
 ## Decisions where the spec was ambiguous
 
-- **Earlier layers' `sync` when a later layer replaces the entry:** rule 6 is applied
-  literally. Each layer's `sync` is still merged under the next one's, even though the rest
-  of the entry (overlay, mixins) is replaced. To drop a setting, set it explicitly later.
+- **Combined profile name:** `<environment>-<clusterType>` (e.g. `prod-hub`), matching the
+  cluster name prefix.
 - `generate --check` regenerates in a temp copy and diffs the whole `apps/` tree. Only
   generated files can differ there.
 - The cluster kustomization lint checks (`facts/` and `argocd/` must be identical for every

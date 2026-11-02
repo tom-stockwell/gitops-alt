@@ -1,0 +1,9 @@
+# Issue certificates from Let's Encrypt production.
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+patches:
+- target: {kind: ConfigMap, name: cert-manager-settings}
+  patch: |
+    - op: replace
+      path: /data/issuer
+      value: letsencrypt-prod

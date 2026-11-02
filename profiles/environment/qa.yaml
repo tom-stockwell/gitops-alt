@@ -1,6 +1,0 @@
-# How apps are configured in qa. An entry replaces the cluster-type entry for that app, but
-# only for apps the cluster type selects: listing an app here never adds it to a cluster.
-apps:
-  cert-manager: {overlay: qa}
-  logging:      {overlay: qa, mixins: [canary]}   # qa runs the release candidate
-  monitoring:   {overlay: qa, sync: {automated: {enabled: true}}}

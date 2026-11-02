@@ -14,8 +14,8 @@ Usage: scripts/new-cluster <name> --from <existing> [--domain <domain>]
 
 Copies clusters/<existing> to clusters/<name> and sets its facts: name, and domain,
 clusterType and environment if given (otherwise kept from <existing>). Points its
-ApplicationSets at bootstrap/bases/<clusterType>, resets apps.yaml to no exceptions and
-revisions.env to no pins (tracks main), generates its joins and shows what will run there.
+ApplicationSets at bootstrap/bases/<clusterType>, resets revisions.env to no pins (tracks
+main), generates its joins (every app with a profile matching it) and shows what will run there.
 USAGE
 }
 
@@ -41,10 +41,8 @@ ROOT=$(repo_root)
 
 [[ -n $ctype ]] || ctype=$(cluster_fact "$from" clusterType)
 [[ -n $envname ]] || envname=$(cluster_fact "$from" environment)
-[[ -f $ROOT/profiles/cluster-type/$ctype.yaml && -d $ROOT/bootstrap/bases/$ctype ]] \
-  || die "unknown clusterType '$ctype' (needs profiles/cluster-type/$ctype.yaml and bootstrap/bases/$ctype/)"
-[[ -f $ROOT/profiles/environment/$envname.yaml ]] \
-  || die "unknown environment '$envname' (needs profiles/environment/$envname.yaml)"
+[[ -d $ROOT/bootstrap/bases/$ctype ]] || die "unknown clusterType '$ctype' (needs bootstrap/bases/$ctype/)"
+[[ $envname =~ ^[a-z0-9]+$ ]] || die "environment '$envname' must be lowercase letters and digits"
 [[ $name =~ ^$envname-$ctype-[a-z0-9]+-[0-9]+$ ]] \
   || die "'$name' must be <environment>-<clusterType>-<region>-<id>, e.g. $envname-$ctype-east-1"
 
@@ -60,10 +58,6 @@ sed -i 's|"true" # used by replacements|"true"   # used by replacements|' "$fact
 sed -i 's|^\(- \.\./\.\./\.\./bootstrap/bases/\)[^/[:space:]]*$|\1'"$ctype"'|' "$ROOT/clusters/$name/argocd/kustomization.yaml"
 # Pins don't carry over: the source's pinned commits don't contain this cluster yet.
 grep -E '^[[:space:]]*(#|$)' "$ROOT/clusters/$from/argocd/revisions.env" >"$ROOT/clusters/$name/argocd/revisions.env" || true
-cat >"$ROOT/clusters/$name/apps.yaml" <<EOF
-# Exceptions for this cluster; its clusterType and environment profiles set the rest.
-apps: {}
-EOF
 
 "$SCRIPT_DIR/generate" "$name"
 echo

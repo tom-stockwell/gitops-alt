@@ -66,6 +66,7 @@ expect_eq "prod-workload-east-1 joins" "cert-manager logging monitoring" "$(join
 expect_eq "prod-workload-east-2 joins" "cert-manager gpu-operator logging monitoring" "$(joins_for "$ROOT" prod-workload-east-2)"
 expect_eq "prod-hub-east-1 joins" "cert-manager monitoring" "$(joins_for "$ROOT" prod-hub-east-1)"
 expect_eq "qa-workload-east-1 joins" "cert-manager logging monitoring" "$(joins_for "$ROOT" qa-workload-east-1)"
+[[ ! -e $ROOT/apps/logging/clusters/prod-hub-east-1 ]] || fail "apps/logging/clusters/prod-hub-east-1 exists"
 [[ ! -e $ROOT/apps/gpu-operator/clusters/prod-workload-east-1 ]] || fail "apps/gpu-operator/clusters/prod-workload-east-1 exists"
 
 t T4 "render logging prod-workload-east-2"
@@ -101,9 +102,9 @@ aj() { yq -p=json -o=yaml -r "$3" "$ROOT/apps/$1/clusters/$2/argocd.json"; }
 expect_eq "logging@east-1 automated.enabled" "true" "$(aj logging prod-workload-east-1 .sync.automated.enabled)"
 expect_eq "logging@east-1 wave" "10" "$(aj logging prod-workload-east-1 .sync.wave)"
 expect_eq "logging@east-1 wave type" "!!str" "$(aj logging prod-workload-east-1 '.sync.wave | tag')"
-expect_eq "logging@east-2 automated.enabled" "false" "$(aj logging prod-workload-east-2 .sync.automated.enabled)"
+expect_eq "logging@east-2 automated.enabled" "true" "$(aj logging prod-workload-east-2 .sync.automated.enabled)"
 expect_eq "monitoring@east-1 automated.enabled" "false" "$(aj monitoring prod-workload-east-1 .sync.automated.enabled)"
-expect_eq "monitoring@east-2 automated.enabled" "true" "$(aj monitoring prod-workload-east-2 .sync.automated.enabled)"
+expect_eq "monitoring@east-2 automated.enabled" "false" "$(aj monitoring prod-workload-east-2 .sync.automated.enabled)"
 expect_eq "cert-manager wave" "0" "$(aj cert-manager prod-workload-east-1 .sync.wave)"
 for c in prod-workload-east-1 prod-workload-east-2; do
   for f in "$ROOT"/apps/*/clusters/$c/argocd.json; do
@@ -112,22 +113,22 @@ for c in prod-workload-east-1 prod-workload-east-2; do
   done
 done
 d=$(copy_repo)
-yq -i '.apps.logging = {"overlay": "prod", "sync": {"automated": {"prune": false}}}' "$d/clusters/prod-workload-east-1/apps.yaml"
+yq -i '.sync.automated.prune = false' "$d/apps/logging/argocd.yaml"
 expect_ok "generate with prune override" "$d/scripts/generate" prod-workload-east-1
 expect_eq "prune override keeps other defaults" '{"enabled":true,"prune":false,"selfHeal":true}' \
   "$(yq -p=json -o=json -I=0 .sync.automated "$d/apps/logging/clusters/prod-workload-east-1/argocd.json")"
-yq -i '.apps.logging = {"overlay": "prod", "sync": {"automated": {"enabled": "no"}}}' "$d/clusters/prod-workload-east-1/apps.yaml"
+yq -i '.sync.automated.enabled = "no"' "$d/apps/logging/argocd.yaml"
 expect_fail "non-boolean enabled" "$d/scripts/generate" prod-workload-east-1
 expect_eq "logging@east-2 full" \
-  '{"app":"logging","cluster":"prod-workload-east-2","mixins":["canary"],"overlay":"prod","sync":{"automated":{"enabled":false,"prune":true,"selfHeal":true},"wave":"10"}}' \
+  '{"app":"logging","cluster":"prod-workload-east-2","profiles":["prod-workload","prod-workload-east-2"],"sync":{"automated":{"enabled":true,"prune":true,"selfHeal":true},"wave":"10"}}' \
   "$(cat "$ROOT/apps/logging/clusters/prod-workload-east-2/argocd.json")"
 
-t T8 "null removes an app"
+t T8 "removing an app's last matching profile removes its joins"
 d=$(copy_repo)
-printf 'apps:\n  monitoring: null\n' >>"$d/clusters/prod-workload-east-1/apps.yaml"
+rm -r "$d/apps/logging/profiles/qa-workload"
 expect_ok "generate" "$d/scripts/generate"
-[[ ! -e $d/apps/monitoring/clusters/prod-workload-east-1 ]] || fail "apps/monitoring/clusters/prod-workload-east-1 not deleted"
-[[ -e $d/apps/monitoring/clusters/prod-workload-east-2 ]] || fail "apps/monitoring/clusters/prod-workload-east-2 deleted"
+[[ ! -e $d/apps/logging/clusters/qa-workload-east-1 ]] || fail "apps/logging/clusters/qa-workload-east-1 not deleted"
+[[ -e $d/apps/logging/clusters/prod-workload-east-1 ]] || fail "apps/logging/clusters/prod-workload-east-1 deleted"
 expect_ok "generate --check" "$d/scripts/generate" --check
 
 t T9 "drift detection"
@@ -137,22 +138,26 @@ expect_fail "generate --check" "$d/scripts/generate" --check
 expect_fail "lint" "$d/scripts/lint"
 grep -q 'patches' "$d/apps/logging/clusters/prod-workload-east-1/kustomization.yaml" || fail "--check modified the tree"
 
-t T10 "bad references"
+t T10 "bad profiles"
 d=$(copy_repo)
-yq -i '.apps.logging.overlay = "nope"' "$d/clusters/prod-workload-east-2/apps.yaml"
-expect_fail "unknown overlay" "$d/scripts/generate"
-grep -q "logging.*apps/logging/overlays/nope" "$LOG" || fail "error doesn't name app and path: $(cat "$LOG")"
+mkdir -p "$d/apps/logging/profiles/workload" && touch "$d/apps/logging/profiles/workload/README"
+expect_fail "profile without kustomization.yaml" "$d/scripts/generate"
+grep -q "logging.*apps/logging/profiles/workload/" "$LOG" || fail "error doesn't name app and path: $(cat "$LOG")"
+expect_fail "lint: profile without kustomization.yaml" "$d/scripts/lint"
 d=$(copy_repo)
-yq -i '.apps.logging.mixins = ["nope"]' "$d/clusters/prod-workload-east-2/apps.yaml"
-expect_fail "unknown mixin" "$d/scripts/generate"
-grep -q "logging.*apps/logging/mixins/nope" "$LOG" || fail "error doesn't name app and path: $(cat "$LOG")"
+echo 'sync: {wave: "5"}' >"$d/apps/logging/profiles/prod-workload/argocd.yaml"
+expect_fail "lint: argocd.yaml in a profile" "$d/scripts/lint"
+grep -q "Argo CD settings are only set in apps/logging/argocd.yaml" "$LOG" || fail "lint doesn't explain: $(cat "$LOG")"
+d=$(copy_repo)
+mkdir -p "$d/apps/logging/profiles/qa-hub" && cp "$d/apps/cert-manager/profiles/qa/kustomization.yaml" "$d/apps/logging/profiles/qa-hub/"
+expect_ok "lint: profile matching no cluster" "$d/scripts/lint"
+grep -q "apps/logging/profiles/qa-hub: matches no cluster" "$LOG" || fail "lint doesn't warn: $(cat "$LOG")"
 
 t T11 "new-cluster"
 d=$(copy_repo)
 expect_ok "new-cluster" "$d/scripts/new-cluster" prod-workload-west-1 --from prod-workload-east-1 --domain apps.west1.example.com
 expect_eq "facts name" "prod-workload-west-1" "$(yq -r .data.name "$d/clusters/prod-workload-west-1/facts/facts.yaml")"
 expect_eq "facts domain" "apps.west1.example.com" "$(yq -r .data.domain "$d/clusters/prod-workload-west-1/facts/facts.yaml")"
-expect_eq "apps.yaml has no exceptions" "{}" "$(yq -o=json -I=0 .apps "$d/clusters/prod-workload-west-1/apps.yaml")"
 expect_eq "clusterType/environment copied" "workload prod" \
   "$(yq -r '[.data.clusterType, .data.environment] | join(" ")' "$d/clusters/prod-workload-west-1/facts/facts.yaml")"
 expect_eq "joins" "cert-manager logging monitoring" "$(joins_for "$d" prod-workload-west-1)"
@@ -217,7 +222,7 @@ render_patch() { # <params-json>
   echo "$patch" | yq -o=json -I=0 .spec.syncPolicy.automated
 }
 expect_eq "templatePatch syncPolicy" '{"enabled":false,"prune":true,"selfHeal":true}' \
-  "$(render_patch "$ROOT/apps/logging/clusters/prod-workload-east-2/argocd.json")"
+  "$(render_patch "$ROOT/apps/monitoring/clusters/prod-workload-east-2/argocd.json")"
 echo '{"sync":{"automated":{"prune":false}}}' >"$OUT/partial.json"
 expect_eq "templatePatch defaults" '{"enabled":true,"prune":false,"selfHeal":true}' "$(render_patch "$OUT/partial.json")"
 
@@ -272,44 +277,68 @@ d=$(copy_repo)
 mkdir -p "$d/tenants/team-b/clusters/nope" && echo '{}' >"$d/tenants/team-b/clusters/nope/argocd.json"
 expect_fail "lint rejects an unknown cluster" "$d/scripts/lint"
 
-t T18 "clusterType and environment"
+t T18 "profile selection"
 aj_in() { yq -p=json -o=yaml -r "$4" "$1/apps/$2/clusters/$3/argocd.json"; }
-expect_eq "qa overlay" "qa" "$(aj logging qa-workload-east-1 .overlay)"
-expect_eq "qa environment sync" "true" "$(aj monitoring qa-workload-east-1 .sync.automated.enabled)"
-expect_eq "prod environment mixin" "ha" "$(aj monitoring prod-hub-east-1 '.mixins | join(",")')"
+expect_eq "qa env-type profile" "qa-workload" "$(aj logging qa-workload-east-1 '.profiles | join(",")')"
+expect_eq "prod profile on hub" "prod" "$(aj monitoring prod-hub-east-1 '.profiles | join(",")')"
+expect_eq "prod profile replicas" "2" "$("$S/render" monitoring prod-hub-east-1 | kind_field /dev/stdin Deployment .spec.replicas)"
+expect_eq "join component order" \
+  "../../../../clusters/prod-workload-east-2/facts ../../profiles/prod ../../profiles/per-cluster ../../profiles/prod-workload-east-2" \
+  "$(yq -r '.components | join(" ")' "$ROOT/apps/monitoring/clusters/prod-workload-east-2/kustomization.yaml")"
+expect_eq "cluster-name profile selects" "prod-workload-east-2" "$(aj gpu-operator prod-workload-east-2 '.profiles | join(",")')"
+empty_profile() { # <repo> <app> <profile>
+  mkdir -p "$1/apps/$2/profiles/$3"
+  printf 'apiVersion: kustomize.config.k8s.io/v1alpha1\nkind: Component\nresources: []\n' >"$1/apps/$2/profiles/$3/kustomization.yaml"
+}
 d=$(copy_repo)
-yq -i '.apps.gpu-operator = {"overlay": "prod"}' "$d/profiles/environment/prod.yaml"
+for p in workload prod; do empty_profile "$d" logging "$p"; done
 expect_ok "generate" "$d/scripts/generate"
-[[ ! -e $d/apps/gpu-operator/clusters/prod-workload-east-1 && ! -e $d/apps/gpu-operator/clusters/prod-hub-east-1 ]] \
-  || fail "an environment profile entry added an app"
+expect_eq "all matching profiles, env/type/env-type/per-cluster/cluster order" \
+  "../../../../clusters/prod-workload-east-2/facts ../../profiles/prod ../../profiles/workload ../../profiles/prod-workload ../../profiles/per-cluster ../../profiles/prod-workload-east-2" \
+  "$(yq -r '.components | join(" ")' "$d/apps/logging/clusters/prod-workload-east-2/kustomization.yaml")"
+expect_eq "argocd.json profiles" "prod,workload,prod-workload,prod-workload-east-2" \
+  "$(aj_in "$d" logging prod-workload-east-2 '.profiles | join(",")')"
+for p in hub prod-hub prod-hub-east-1; do
+  d=$(copy_repo)
+  empty_profile "$d" logging "$p"
+  expect_ok "generate with logging/$p" "$d/scripts/generate"
+  expect_eq "logging/$p selects prod-hub-east-1" "cert-manager logging monitoring" "$(joins_for "$d" prod-hub-east-1)"
+  expect_ok "render logging on prod-hub-east-1" "$d/scripts/render" logging prod-hub-east-1
+  expect_eq "per-cluster applied" "logging.apps.hub1.example.com" "$(kind_field "$LOG" Route .spec.host)"
+  expect_eq "CLUSTER_NAME" "prod-hub-east-1" "$(kind_field "$LOG" Deployment '.spec.template.spec.containers[0].env[] | select(.name == "CLUSTER_NAME") | .value')"
+done
 d=$(copy_repo)
-yq -i '.apps.logging = null' "$d/profiles/environment/qa.yaml"
-expect_ok "generate" "$d/scripts/generate"
-[[ ! -e $d/apps/logging/clusters/qa-workload-east-1 && -e $d/apps/logging/clusters/prod-workload-east-1 ]] \
-  || fail "environment null didn't remove the app only in that environment"
+mkdir -p "$d/apps/gpu-operator/components/hub"
+printf 'apiVersion: kustomize.config.k8s.io/v1alpha1\nkind: Component\nresources: []\n' >"$d/apps/gpu-operator/components/hub/kustomization.yaml"
+expect_ok "generate with an unused component" "$d/scripts/generate"
+expect_eq "a component doesn't select" "cert-manager monitoring" "$(joins_for "$d" prod-hub-east-1)"
+expect_ok "lint" "$d/scripts/lint"
+grep -q "apps/gpu-operator/components/hub: not used by any profile" "$LOG" || fail "lint doesn't warn: $(cat "$LOG")"
 d=$(copy_repo)
-yq -i '.apps.gpu-operator = {"overlay": "prod", "sync": {"automated": {"enabled": false}}}' "$d/profiles/environment/qa.yaml"
-yq -i '.apps.gpu-operator = {"overlay": "prod"}' "$d/clusters/qa-workload-east-1/apps.yaml"
-expect_ok "generate" "$d/scripts/generate"
-expect_eq "environment sync skips apps the clusterType didn't select" "true" \
-  "$(aj_in "$d" gpu-operator qa-workload-east-1 .sync.automated.enabled)"
+mv "$d/apps/logging/profiles/per-cluster" "$d/apps/logging/per-cluster"
+expect_fail "lint: unknown dir in an app" "$d/scripts/lint"
+grep -q "apps/logging/per-cluster: not allowed" "$LOG" || fail "lint doesn't explain: $(cat "$LOG")"
+d=$(copy_repo)
+rm -r "$d/apps/gpu-operator/profiles/prod-workload-east-2"
+expect_ok "generate without gpu-operator's only profile" "$d/scripts/generate"
+expect_eq "gpu-operator runs nowhere" "" "$(ls "$d/apps/gpu-operator/clusters" 2>/dev/null)"
 d=$(copy_repo)
 yq -i '.data.clusterType = "workload"' "$d/clusters/prod-hub-east-1/facts/facts.yaml"
 expect_fail "lint: base must match clusterType" "$d/scripts/lint"
 grep -q "base must be ../../../bootstrap/bases/workload" "$LOG" || fail "lint doesn't explain the base mismatch"
 d=$(copy_repo)
-yq -i '.data.environment = "staging"' "$d/clusters/qa-workload-east-1/facts/facts.yaml"
-expect_fail "generate: unknown environment" "$d/scripts/generate"
-grep -q "profiles/environment/staging.yaml" "$LOG" || fail "generate doesn't name the missing profile"
-expect_fail "lint: unknown environment" "$d/scripts/lint"
+yq -i 'del(.data.environment)' "$d/clusters/qa-workload-east-1/facts/facts.yaml"
+expect_fail "generate: no environment" "$d/scripts/generate"
+grep -q "data.environment is not set" "$LOG" || fail "generate doesn't explain: $(cat "$LOG")"
+expect_fail "lint: no environment" "$d/scripts/lint"
 d=$(copy_repo)
-echo 'extends: prod' >>"$d/clusters/prod-workload-east-1/apps.yaml"
-expect_fail "lint: extends is rejected" "$d/scripts/lint"
+echo 'apps: {}' >"$d/clusters/prod-workload-east-1/apps.yaml"
+expect_fail "lint: apps.yaml is rejected" "$d/scripts/lint"
 d=$(copy_repo)
 expect_ok "new-cluster --type hub" "$d/scripts/new-cluster" qa-hub-east-1 --from qa-workload-east-1 --type hub
 expect_eq "hub base" "1" "$(grep -cxF -- '- ../../../bootstrap/bases/hub' "$d/clusters/qa-hub-east-1/argocd/kustomization.yaml")"
 expect_eq "qa-hub-east-1 joins" "cert-manager monitoring" "$(joins_for "$d" qa-hub-east-1)"
-expect_eq "qa-hub-east-1 overlay" "qa" "$(aj_in "$d" monitoring qa-hub-east-1 .overlay)"
+expect_eq "qa-hub-east-1 profiles" "qa" "$(aj_in "$d" monitoring qa-hub-east-1 '.profiles | join(",")')"
 expect_ok "lint" "$d/scripts/lint"
 expect_fail "new-cluster name not matching type/environment" "$d/scripts/new-cluster" prod-workload-east-9 --from qa-workload-east-1
 [[ ! -e $d/clusters/prod-workload-east-9 ]] || fail "new-cluster made a misnamed cluster"

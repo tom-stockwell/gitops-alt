@@ -38,14 +38,16 @@ for k in apps/*/clusters/*/kustomization.yaml; do
   head -n1 "$k" | grep -qF "$GENERATED_PREFIX" || err "$k: missing GENERATED header"
   extra=$(yq -r 'keys | .[] | select(. != "apiVersion" and . != "kind" and . != "resources" and . != "components")' "$k")
   [[ -z $extra ]] || err "$k: joins may only contain apiVersion/kind/resources/components, found: $(echo $extra)"
-  [[ $(yq '.resources | length' "$k") == 1 && $(yq -r '.resources[0]' "$k") =~ ^\.\./\.\./overlays/[^/]+$ ]] \
-    || err "$k: resources must be exactly one ../../overlays/<overlay>"
-  [[ $(yq -r '.components[-1] // ""' "$k") == "../../../../clusters/$c/facts" ]] \
-    || err "$k: last component must be ../../../../clusters/$c/facts"
+  [[ $(yq -o=json -I=0 '.resources' "$k") == '["../../base"]' ]] \
+    || err "$k: resources must be exactly ../../base"
+  [[ $(yq -r '.components[0] // ""' "$k") == "../../../../clusters/$c/facts" ]] \
+    || err "$k: first component must be ../../../../clusters/$c/facts"
+  bad=$(yq -r '.components[1:] | .[] | select(test("^\.\./\.\./profiles/[^/]+$") | not)' "$k")
+  [[ -z $bad ]] || err "$k: components after the facts must be ../../profiles/<profile>, found: $(echo $bad)"
 done
 
 # Cluster dirs.
-declare -A canonical=() has_appset=()
+declare -A canonical=() has_appset=() profile_names=()
 is_git=false
 git rev-parse --git-dir >/dev/null 2>&1 && is_git=true
 mapfile -t appsets < <(appset_names)
@@ -53,20 +55,19 @@ mapfile -t appsets < <(appset_names)
 normalize() { sed -E 's|bootstrap/bases/[^/[:space:]]+|bootstrap/bases/BASE|' "$1"; }
 for c in "${clusters[@]}"; do
   d=clusters/$c
-  for f in apps.yaml facts/kustomization.yaml facts/facts.yaml argocd/kustomization.yaml argocd/revisions.env; do
+  for f in facts/kustomization.yaml facts/facts.yaml argocd/kustomization.yaml argocd/revisions.env; do
     [[ -f $d/$f ]] || err "$d: missing $f"
   done
-  [[ ! -f $d/apps.yaml ]] || [[ $(yq 'has("extends")' "$d/apps.yaml") == false ]] \
-    || err "$d/apps.yaml: 'extends' is no longer used; profiles come from the cluster's clusterType and environment"
+  [[ ! -e $d/apps.yaml ]] || err "$d/apps.yaml: no longer used; apps are selected by their profiles (apps/<app>/profiles/)"
   if [[ -f $d/facts/facts.yaml ]]; then
     [[ $(yq -r '.data.name // ""' "$d/facts/facts.yaml") == "$c" ]] || err "$d/facts/facts.yaml: data.name must be '$c'"
     # clusterType and environment pick the profiles and the ApplicationSet base.
+    # Every cluster's profile names: <env>, <type>, <env>-<type>, <cluster>.
     ctype=$(yq -r '.data.clusterType // ""' "$d/facts/facts.yaml")
     envname=$(yq -r '.data.environment // ""' "$d/facts/facts.yaml")
     if [[ -z $ctype ]]; then
       err "$d/facts/facts.yaml: data.clusterType is not set"
     else
-      [[ -f profiles/cluster-type/$ctype.yaml ]] || err "$d/facts/facts.yaml: clusterType '$ctype' has no profiles/cluster-type/$ctype.yaml"
       [[ -d bootstrap/bases/$ctype ]] || err "$d/facts/facts.yaml: clusterType '$ctype' has no bootstrap/bases/$ctype/"
       [[ ! -f $d/argocd/kustomization.yaml ]] || grep -qxF -- "- ../../../bootstrap/bases/$ctype" "$d/argocd/kustomization.yaml" \
         || err "$d/argocd/kustomization.yaml: base must be ../../../bootstrap/bases/$ctype (its clusterType)"
@@ -74,13 +75,14 @@ for c in "${clusters[@]}"; do
     if [[ -n $ctype && -n $envname ]] && [[ ! $c =~ ^$envname-$ctype-[a-z0-9]+-[0-9]+$ ]]; then
       err "$d: cluster name must be <environment>-<clusterType>-<region>-<id>, e.g. $envname-$ctype-east-1"
     fi
-    if [[ -z $envname ]]; then
-      err "$d/facts/facts.yaml: data.environment is not set"
-    else
-      [[ -f profiles/environment/$envname.yaml ]] || err "$d/facts/facts.yaml: environment '$envname' has no profiles/environment/$envname.yaml"
-    fi
+    [[ -n $envname ]] || err "$d/facts/facts.yaml: data.environment is not set"
     [[ $(yq -r '.metadata.annotations["config.kubernetes.io/local-config"] // ""' "$d/facts/facts.yaml") == "true" ]] \
       || err "$d/facts/facts.yaml: missing annotation config.kubernetes.io/local-config: \"true\""
+    [[ $envname-$ctype != "$PER_CLUSTER_PROFILE" ]] \
+      || err "$d/facts/facts.yaml: <environment>-<clusterType> can't be '$PER_CLUSTER_PROFILE' (reserved profile name)"
+    if [[ -n $ctype && -n $envname ]]; then
+      profile_names[$ctype]=1 profile_names[$envname]=1 profile_names[$envname-$ctype]=1
+    fi
   fi
   # facts/ and argocd/ kustomizations must be identical across clusters (argocd/ up to its base).
   for f in facts/kustomization.yaml argocd/kustomization.yaml; do
@@ -155,20 +157,44 @@ done
 # App dirs.
 for d in apps/*/; do
   d=${d%/}
+  app=$(basename "$d")
   [[ -f $d/argocd.yaml ]] || err "$d: missing argocd.yaml"
-  [[ -d $d/overlays ]] || err "$d: missing overlays/"
-  for o in "$d"/overlays/*/; do
-    [[ -d $o ]] || continue
-    o=${o%/}
-    name=$(basename "$o")
-    for c in "${clusters[@]}"; do
-      [[ $name == "$c" ]] || continue
-      warnings+=("$o: overlay named after cluster $c (one-off exception)")
-      for a in owner reason; do
-        [[ -n $(A=$a yq -r '.metadata.annotations[strenv(A)] // ""' "$o/kustomization.yaml" 2>/dev/null) ]] \
-          || err "$o/kustomization.yaml: cluster-named overlay needs metadata.annotations.$a"
-      done
+  [[ -d $d/base ]] || err "$d: missing base/"
+  for e in "$d"/* "$d"/.[!.]*; do
+    [[ -e $e ]] || continue
+    case $(basename "$e") in
+      argocd.yaml|base|components|profiles|clusters) ;;
+      *) err "$e: not allowed; an app has only argocd.yaml, base/, components/, profiles/ and clusters/" ;;
+    esac
+  done
+  # Components: modular pieces that profiles use; never in a join directly.
+  for comp in "$d"/components/*/; do
+    [[ -d $comp ]] || continue
+    comp=${comp%/}
+    [[ $(yq -r '.kind // ""' "$comp/kustomization.yaml" 2>/dev/null) == Component ]] \
+      || err "$comp: needs a kustomization.yaml with kind: Component"
+    used=false
+    for k in "$d"/profiles/*/kustomization.yaml "$d"/components/*/kustomization.yaml; do
+      [[ -f $k && $k != "$comp/kustomization.yaml" ]] || continue
+      C="../../components/$(basename "$comp")" yq -e '(.components // []) | any_c(. == strenv(C))' "$k" >/dev/null 2>&1 \
+        && { used=true; break; }
     done
+    $used || warnings+=("$comp: not used by any profile")
+  done
+  for p in "$d"/profiles/*/; do
+    [[ -d $p ]] || continue
+    p=${p%/}
+    name=$(basename "$p")
+    [[ $(yq -r '.kind // ""' "$p/kustomization.yaml" 2>/dev/null) == Component ]] \
+      || err "$p: needs a kustomization.yaml with kind: Component"
+    [[ ! -e $p/argocd.yaml ]] || err "$p/argocd.yaml: Argo CD settings are only set in $d/argocd.yaml"
+    if [[ $name == "$PER_CLUSTER_PROFILE" ]]; then
+      :
+    elif [[ -d clusters/$name ]]; then
+      warnings+=("$p: cluster-name profile (one-off exception)")
+    elif [[ -z ${profile_names[$name]:-} ]]; then
+      warnings+=("$p: matches no cluster (profiles are <environment>, <clusterType>, <environment>-<clusterType> or a cluster name)")
+    fi
   done
 done
 
