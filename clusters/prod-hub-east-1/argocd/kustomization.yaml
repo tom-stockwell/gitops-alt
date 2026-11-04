@@ -1,5 +1,5 @@
 # This cluster's ApplicationSets, synced by its root Application (scripts/bootstrap-root).
-# Identical for every cluster except the base, which must be bootstrap/bases/<clusterType>.
+# Identical for every cluster except the base, which must be bootstrap/bases/<role>.
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 resources:

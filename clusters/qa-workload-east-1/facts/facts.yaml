@@ -6,6 +6,9 @@ metadata:
     config.kubernetes.io/local-config: "true"   # used by replacements, never emitted
 data:
   name: qa-workload-east-1
-  domain: apps.qa-east1.example.com
-  clusterType: workload
+  domain: qa-east1.example.com
   environment: qa
+  role: workload
+  topology: sno
+  region: us-east-1
+  platform: aws

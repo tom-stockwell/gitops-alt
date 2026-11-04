@@ -62,28 +62,42 @@ cluster_fact() {
   K=$2 yq -r '.data[strenv(K)] // ""' "$f"
 }
 
-# PER_CLUSTER_PROFILE: apps/<app>/profiles/<this>/ holds the app's replacements from the cluster
-# facts. It is in every cluster overlay for the app, but no cluster matches it, so it never selects.
-PER_CLUSTER_PROFILE=per-cluster
+# FACET_KEYS: the cluster facts that pick facets, in the order their facets apply. Every cluster
+# must set them all. apps/<app>/facets/<key>/<value>/ matches a cluster whose fact <key> is
+# <value>; every key but environment also matches as <value>-<environment>.
+FACET_KEYS=(environment role topology region platform)
 
-# cluster_profiles <cluster>: the profile names a cluster matches, in the order they apply:
-#   <environment>, <clusterType>, <environment>-<clusterType>, <cluster>.
-cluster_profiles() {
-  local c=$1 ctype envname
-  ctype=$(cluster_fact "$c" clusterType) || exit 1
+# CLUSTER_FACET: apps/<app>/facets/<this>/<cluster>/ matches only that cluster (by name). Never
+# suffixed; applied last. One-off exceptions; they should rarely exist.
+CLUSTER_FACET=cluster
+
+# PER_CLUSTER_FACET: apps/<app>/facets/<this>/ holds the app's replacements from the cluster
+# facts. It is in every cluster overlay for the app, but never selects it.
+PER_CLUSTER_FACET=per-cluster
+
+# cluster_facets <cluster>: the facets (paths under facets/) a cluster matches, in the order they
+# apply: environment/<env>, then <key>/<value> and <key>/<value>-<env> for each other key, then
+# cluster/<cluster>.
+cluster_facets() {
+  local c=$1 k v envname
   envname=$(cluster_fact "$c" environment) || exit 1
-  [[ -n $ctype ]] || die "clusters/$c/facts/facts.yaml: data.clusterType is not set"
   [[ -n $envname ]] || die "clusters/$c/facts/facts.yaml: data.environment is not set"
-  printf '%s\n' "$envname" "$ctype" "$envname-$ctype" "$c"
+  echo "environment/$envname"
+  for k in "${FACET_KEYS[@]:1}"; do
+    v=$(cluster_fact "$c" "$k") || exit 1
+    [[ -n $v ]] || die "clusters/$c/facts/facts.yaml: data.$k is not set"
+    printf '%s\n' "$k/$v" "$k/$v-$envname"
+  done
+  echo "$CLUSTER_FACET/$c"
 }
 
-# app_profiles <app> <cluster>: the app's profiles (apps/<app>/profiles/<name>/) that match the
-# cluster, in order. Empty if none match, which means the app doesn't run there.
-app_profiles() {
-  local app=$1 c=$2 p names
-  names=$(cluster_profiles "$c") || exit 1
-  for p in $names; do
-    [[ -d $ROOT/apps/$app/profiles/$p ]] && echo "$p"
+# app_facets <app> <cluster>: the app's facets that match the cluster, in order. Empty if none
+# match, which means the app doesn't run there.
+app_facets() {
+  local app=$1 c=$2 f names
+  names=$(cluster_facets "$c") || exit 1
+  for f in $names; do
+    [[ -d $ROOT/apps/$app/facets/$f ]] && echo "$f"
   done
   return 0
 }

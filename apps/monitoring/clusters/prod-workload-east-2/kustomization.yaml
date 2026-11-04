@@ -5,6 +5,6 @@ resources:
 - ../../base
 components:
 - ../../../../clusters/prod-workload-east-2/facts
-- ../../profiles/prod
-- ../../profiles/per-cluster
-- ../../profiles/prod-workload-east-2
+- ../../facets/environment/prod
+- ../../facets/topology/compact
+- ../../facets/per-cluster

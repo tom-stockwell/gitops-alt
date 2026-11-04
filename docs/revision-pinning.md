@@ -35,11 +35,11 @@ root Application (per cluster, tracks main)
 
 ### Bases: which ApplicationSets a cluster runs
 
-`bootstrap/bases/` has one base per cluster type: `hub` (cluster-config) and `workload`
+`bootstrap/bases/` has one base per role: `hub` (cluster-config) and `workload`
 (cluster-config + tenant-config). A cluster's `clusters/<cluster>/argocd/kustomization.yaml`
-uses `bootstrap/bases/<clusterType>`, from the `clusterType` in its facts. That line is the
+uses `bootstrap/bases/<role>`, from the `role` in its facts. That line is the
 only difference between clusters' kustomizations, and lint checks both that it matches the
-clusterType and that the rest is identical.
+role and that the rest is identical.
 
 Two things keep the bases simple:
 - **The defaults cover every ApplicationSet.** `bootstrap/appset-revisions/` (included by

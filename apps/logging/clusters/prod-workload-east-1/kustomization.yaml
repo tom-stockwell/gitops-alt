@@ -5,5 +5,5 @@ resources:
 - ../../base
 components:
 - ../../../../clusters/prod-workload-east-1/facts
-- ../../profiles/prod-workload
-- ../../profiles/per-cluster
+- ../../facets/role/workload-prod
+- ../../facets/per-cluster

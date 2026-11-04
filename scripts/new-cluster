@@ -7,26 +7,29 @@ source "$SCRIPT_DIR/lib.sh"
 
 usage() {
   cat <<USAGE
-Usage: scripts/new-cluster <name> --from <existing> [--domain <domain>]
-                           [--type <clusterType>] [--environment <environment>]
+Usage: scripts/new-cluster <name> --from <existing> [--domain <domain>] [--environment <env>]
+                           [--role <role>] [--topology <topology>] [--region <region>]
+                           [--platform <platform>]
 
-<name> must be <environment>-<clusterType>-<region>-<id>, e.g. prod-workload-east-3.
+<name> must be <environment>-<role>-<region>-<id>, e.g. prod-workload-east-3.
 
-Copies clusters/<existing> to clusters/<name> and sets its facts: name, and domain,
-clusterType and environment if given (otherwise kept from <existing>). Points its
-ApplicationSets at bootstrap/bases/<clusterType>, resets revisions.env to no pins (tracks
-main), generates its joins (every app with a profile matching it) and shows what will run there.
+Copies clusters/<existing> to clusters/<name> and sets its facts: name, plus domain and the
+facet facts (environment, role, topology, region, platform) where given; the rest are kept
+from <existing>. Points its ApplicationSets at bootstrap/bases/<role>, resets revisions.env
+to no pins (tracks main), generates its joins (every app with a facet matching it) and shows
+what will run there.
 USAGE
 }
 
-name="" from="" domain="" ctype="" envname=""
+name="" from="" domain=""
+declare -A fact=()
 while [[ $# -gt 0 ]]; do
   case $1 in
     -h|--help) usage; exit 0 ;;
     --from) [[ $# -ge 2 ]] || die "--from needs a value"; from=$2; shift 2 ;;
     --domain) [[ $# -ge 2 ]] || die "--domain needs a value"; domain=$2; shift 2 ;;
-    --type) [[ $# -ge 2 ]] || die "--type needs a value"; ctype=$2; shift 2 ;;
-    --environment) [[ $# -ge 2 ]] || die "--environment needs a value"; envname=$2; shift 2 ;;
+    --environment|--role|--topology|--region|--platform)
+      [[ $# -ge 2 ]] || die "$1 needs a value"; fact[${1#--}]=$2; shift 2 ;;
     -*) die "unknown option: $1" ;;
     *) [[ -z $name ]] || die "unexpected argument: $1"; name=$1; shift ;;
   esac
@@ -39,23 +42,28 @@ ROOT=$(repo_root)
 [[ ! -e $ROOT/clusters/$name ]] || die "clusters/$name already exists"
 [[ -d $ROOT/clusters/$from ]] || die "unknown cluster: $from"
 
-[[ -n $ctype ]] || ctype=$(cluster_fact "$from" clusterType)
-[[ -n $envname ]] || envname=$(cluster_fact "$from" environment)
-[[ -d $ROOT/bootstrap/bases/$ctype ]] || die "unknown clusterType '$ctype' (needs bootstrap/bases/$ctype/)"
+for k in "${FACET_KEYS[@]}"; do
+  [[ -n ${fact[$k]:-} ]] || fact[$k]=$(cluster_fact "$from" "$k")
+  [[ ${fact[$k]} =~ ^[a-z0-9]+(-[a-z0-9]+)*$ ]] || die "$k '${fact[$k]}' must be lowercase letters, digits and '-'"
+done
+role=${fact[role]} envname=${fact[environment]}
+[[ -d $ROOT/bootstrap/bases/$role ]] || die "unknown role '$role' (needs bootstrap/bases/$role/)"
 [[ $envname =~ ^[a-z0-9]+$ ]] || die "environment '$envname' must be lowercase letters and digits"
-[[ $name =~ ^$envname-$ctype-[a-z0-9]+-[0-9]+$ ]] \
-  || die "'$name' must be <environment>-<clusterType>-<region>-<id>, e.g. $envname-$ctype-east-1"
+[[ $name =~ ^$envname-$role-[a-z0-9]+-[0-9]+$ ]] \
+  || die "'$name' must be <environment>-<role>-<region>-<id>, e.g. $envname-$role-east-1"
 
 cp -R "$ROOT/clusters/$from" "$ROOT/clusters/$name"
 facts=$ROOT/clusters/$name/facts/facts.yaml
-NAME=$name CTYPE=$ctype ENVNAME=$envname yq -i \
-  '.data.name = strenv(NAME) | .data.clusterType = strenv(CTYPE) | .data.environment = strenv(ENVNAME)' "$facts"
+NAME=$name yq -i '.data.name = strenv(NAME)' "$facts"
+for k in "${FACET_KEYS[@]}"; do
+  K=$k V=${fact[$k]} yq -i '.data[strenv(K)] = strenv(V)' "$facts"
+done
 if [[ -n $domain ]]; then
   DOMAIN=$domain yq -i '.data.domain = strenv(DOMAIN)' "$facts"
 fi
 # yq -i collapses comment spacing; keep the source's.
 sed -i 's|"true" # used by replacements|"true"   # used by replacements|' "$facts"
-sed -i 's|^\(- \.\./\.\./\.\./bootstrap/bases/\)[^/[:space:]]*$|\1'"$ctype"'|' "$ROOT/clusters/$name/argocd/kustomization.yaml"
+sed -i 's|^\(- \.\./\.\./\.\./bootstrap/bases/\)[^/[:space:]]*$|\1'"$role"'|' "$ROOT/clusters/$name/argocd/kustomization.yaml"
 # Pins don't carry over: the source's pinned commits don't contain this cluster yet.
 grep -E '^[[:space:]]*(#|$)' "$ROOT/clusters/$from/argocd/revisions.env" >"$ROOT/clusters/$name/argocd/revisions.env" || true
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Generate the joins (apps/<app>/clusters/<cluster>/) from the profiles each app has.
+# Generate the joins (apps/<app>/clusters/<cluster>/) from the facets each app has.
 set -euo pipefail
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 # shellcheck source=lib.sh
@@ -10,8 +10,9 @@ usage() {
 Usage: scripts/generate [--check] [cluster...]
 
 Writes apps/<app>/clusters/<cluster>/{kustomization.yaml,argocd.json} for every app with
-a profile (apps/<app>/profiles/<name>/) for the cluster's <environment>, <clusterType>,
-<environment>-<clusterType> or name, and deletes generated joins for apps no longer selected.
+a facet matching the cluster (apps/<app>/facets/<key>/<value>[-<environment>]/ for its
+environment, role, topology, region or platform fact, or apps/<app>/facets/cluster/<cluster>/), and
+deletes generated joins for apps no longer selected.
 Default: all clusters, which also deletes generated joins for clusters that no longer exist.
 
   --check   generate into a temp copy and diff against the working tree; exit 1 on
@@ -63,22 +64,22 @@ cleanup_add "$work"
 mapfile -t all_apps < <(list_apps)
 
 # Pass 1: resolve and validate everything before touching the tree.
-# $work/<cluster>.apps: selected apps; $work/<cluster>.<app>.profiles: its profiles, in order.
+# $work/<cluster>.apps: selected apps; $work/<cluster>.<app>.facets: its facets, in order.
 for c in "${clusters[@]}"; do
   : >"$work/$c.apps"
   for app in "${all_apps[@]}"; do
-    app_profiles "$app" "$c" >"$work/$c.$app.profiles"
-    [[ -s $work/$c.$app.profiles ]] || continue
+    app_facets "$app" "$c" >"$work/$c.$app.facets"
+    [[ -s $work/$c.$app.facets ]] || continue
     echo "$app" >>"$work/$c.apps"
     [[ -d $ROOT/apps/$app/base ]] || die "$c: app '$app': apps/$app/base/ does not exist"
-    mapfile -t profiles <"$work/$c.$app.profiles"
-    for p in "${profiles[@]}"; do
-      [[ -f $ROOT/apps/$app/profiles/$p/kustomization.yaml ]] \
-        || die "$c: app '$app': apps/$app/profiles/$p/ has no kustomization.yaml"
+    mapfile -t facets <"$work/$c.$app.facets"
+    for f in "${facets[@]}"; do
+      [[ -f $ROOT/apps/$app/facets/$f/kustomization.yaml ]] \
+        || die "$c: app '$app': apps/$app/facets/$f/ has no kustomization.yaml"
     done
-    pc=$ROOT/apps/$app/profiles/$PER_CLUSTER_PROFILE
+    pc=$ROOT/apps/$app/facets/$PER_CLUSTER_FACET
     [[ ! -d $pc || -f $pc/kustomization.yaml ]] \
-      || die "$c: app '$app': apps/$app/profiles/$PER_CLUSTER_PROFILE/ has no kustomization.yaml"
+      || die "$c: app '$app': apps/$app/facets/$PER_CLUSTER_FACET/ has no kustomization.yaml"
     sync=$(resolve_sync "$app")
     SYNC=$sync yq -e -n 'env(SYNC) | [
         (.automated.enabled | tag) == "!!bool",
@@ -135,16 +136,16 @@ for c in "${clusters[@]}"; do
   for app in "${apps[@]}"; do
     out=$ROOT/apps/$app/clusters/$c
     mkdir -p "$out"
-    mapfile -t profiles <"$work/$c.$app.profiles"
-    # Order: facts ConfigMap; <env>, <type>, <env>-<type>; per-cluster (the app's replacements
-    # from the facts, so they fill placeholders any of those add); <cluster> last, so it can
-    # override anything.
+    mapfile -t facets <"$work/$c.$app.facets"
+    # Order: facts ConfigMap; the matched facets in cluster_facets order; per-cluster (the app's
+    # replacements from the facts, so they fill placeholders any facet adds); the cluster
+    # facet last, so it can override anything.
     components=(../../../../clusters/$c/facts)
-    for p in "${profiles[@]}"; do
-      [[ $p == "$c" ]] || components+=("../../profiles/$p")
+    for f in "${facets[@]}"; do
+      [[ $f == "$CLUSTER_FACET/$c" ]] || components+=("../../facets/$f")
     done
-    [[ -d $ROOT/apps/$app/profiles/$PER_CLUSTER_PROFILE ]] && components+=("../../profiles/$PER_CLUSTER_PROFILE")
-    [[ ${profiles[-1]} == "$c" ]] && components+=("../../profiles/$c")
+    [[ -d $ROOT/apps/$app/facets/$PER_CLUSTER_FACET ]] && components+=("../../facets/$PER_CLUSTER_FACET")
+    [[ ${facets[-1]} == "$CLUSTER_FACET/$c" ]] && components+=("../../facets/$CLUSTER_FACET/$c")
     {
       echo "$GENERATED_PREFIX for clusters/$c — DO NOT EDIT."
       echo "apiVersion: kustomize.config.k8s.io/v1beta1"
@@ -155,12 +156,12 @@ for c in "${clusters[@]}"; do
       printf -- '- %s\n' "${components[@]}"
     } >"$out/kustomization.yaml"
     APP=$app CLUSTER=$c \
-    PROFILES=$(printf '%s\n' "${profiles[@]}") \
+    FACETS=$(printf '%s\n' "${facets[@]}") \
     SYNC=$(cat "$work/$c.$app.sync.json") \
       yq -n -o=json -I=0 '{
         "app": strenv(APP),
         "cluster": strenv(CLUSTER),
-        "profiles": (strenv(PROFILES) | split("\n")),
+        "facets": (strenv(FACETS) | split("\n")),
         "sync": (env(SYNC) | .wave |= tostring)
       } | sort_keys(..)' >"$out/argocd.json"
     echo "wrote apps/$app/clusters/$c"

@@ -5,5 +5,5 @@ resources:
 - ../../base
 components:
 - ../../../../clusters/qa-workload-east-1/facts
-- ../../profiles/qa
-- ../../profiles/per-cluster
+- ../../facets/environment/qa
+- ../../facets/per-cluster

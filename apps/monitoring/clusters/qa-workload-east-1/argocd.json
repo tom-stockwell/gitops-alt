@@ -1,1 +1,1 @@
-{"app":"monitoring","cluster":"qa-workload-east-1","profiles":["qa"],"sync":{"automated":{"enabled":false,"prune":true,"selfHeal":true},"wave":"20"}}
+{"app":"monitoring","cluster":"qa-workload-east-1","facets":["environment/qa"],"sync":{"automated":{"enabled":false,"prune":true,"selfHeal":true},"wave":"20"}}

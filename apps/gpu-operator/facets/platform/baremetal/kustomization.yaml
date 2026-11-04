@@ -1,0 +1,4 @@
+# No changes: selects gpu-operator for baremetal clusters, the only ones with GPU nodes.
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+resources: []

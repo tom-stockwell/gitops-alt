@@ -6,6 +6,9 @@ metadata:
     config.kubernetes.io/local-config: "true"   # used by replacements, never emitted
 data:
   name: prod-hub-east-1
-  domain: apps.hub1.example.com
-  clusterType: hub
+  domain: hub1.example.com
   environment: prod
+  role: hub
+  topology: standard
+  region: us-east-1
+  platform: aws

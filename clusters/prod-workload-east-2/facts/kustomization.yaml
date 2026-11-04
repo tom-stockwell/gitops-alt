@@ -1,4 +1,4 @@
-# The cluster's facts as a local-config ConfigMap (never emitted). Each app's profiles/facts
+# The cluster's facts as a local-config ConfigMap (never emitted). Each app's facets/per-cluster
 # Component reads them with replacements. Identical for every cluster.
 apiVersion: kustomize.config.k8s.io/v1alpha1
 kind: Component

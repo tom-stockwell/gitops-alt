@@ -42,12 +42,12 @@ for k in apps/*/clusters/*/kustomization.yaml; do
     || err "$k: resources must be exactly ../../base"
   [[ $(yq -r '.components[0] // ""' "$k") == "../../../../clusters/$c/facts" ]] \
     || err "$k: first component must be ../../../../clusters/$c/facts"
-  bad=$(yq -r '.components[1:] | .[] | select(test("^\.\./\.\./profiles/[^/]+$") | not)' "$k")
-  [[ -z $bad ]] || err "$k: components after the facts must be ../../profiles/<profile>, found: $(echo $bad)"
+  bad=$(yq -r '.components[1:] | .[] | select(test("^\.\./\.\./facets/[^/]+(/[^/]+)?$") | not)' "$k")
+  [[ -z $bad ]] || err "$k: components after the facts must be ../../facets/<facet>, found: $(echo $bad)"
 done
 
 # Cluster dirs.
-declare -A canonical=() has_appset=() profile_names=()
+declare -A canonical=() has_appset=() facet_names=()
 is_git=false
 git rev-parse --git-dir >/dev/null 2>&1 && is_git=true
 mapfile -t appsets < <(appset_names)
@@ -58,31 +58,39 @@ for c in "${clusters[@]}"; do
   for f in facts/kustomization.yaml facts/facts.yaml argocd/kustomization.yaml argocd/revisions.env; do
     [[ -f $d/$f ]] || err "$d: missing $f"
   done
-  [[ ! -e $d/apps.yaml ]] || err "$d/apps.yaml: no longer used; apps are selected by their profiles (apps/<app>/profiles/)"
+  [[ ! -e $d/apps.yaml ]] || err "$d/apps.yaml: no longer used; apps are selected by their facets (apps/<app>/facets/)"
   if [[ -f $d/facts/facts.yaml ]]; then
     [[ $(yq -r '.data.name // ""' "$d/facts/facts.yaml") == "$c" ]] || err "$d/facts/facts.yaml: data.name must be '$c'"
-    # clusterType and environment pick the profiles and the ApplicationSet base.
-    # Every cluster's profile names: <env>, <type>, <env>-<type>, <cluster>.
-    ctype=$(yq -r '.data.clusterType // ""' "$d/facts/facts.yaml")
-    envname=$(yq -r '.data.environment // ""' "$d/facts/facts.yaml")
-    if [[ -z $ctype ]]; then
-      err "$d/facts/facts.yaml: data.clusterType is not set"
-    else
-      [[ -d bootstrap/bases/$ctype ]] || err "$d/facts/facts.yaml: clusterType '$ctype' has no bootstrap/bases/$ctype/"
-      [[ ! -f $d/argocd/kustomization.yaml ]] || grep -qxF -- "- ../../../bootstrap/bases/$ctype" "$d/argocd/kustomization.yaml" \
-        || err "$d/argocd/kustomization.yaml: base must be ../../../bootstrap/bases/$ctype (its clusterType)"
+    # The facet keys pick each app's facets; role also picks the ApplicationSet base.
+    declare -A fact=()
+    for k in "${FACET_KEYS[@]}"; do
+      fact[$k]=$(K=$k yq -r '.data[strenv(K)] // ""' "$d/facts/facts.yaml")
+      if [[ -z ${fact[$k]} ]]; then
+        err "$d/facts/facts.yaml: data.$k is not set"
+      elif [[ $k == environment && ! ${fact[$k]} =~ ^[a-z0-9]+$ ]]; then
+        err "$d/facts/facts.yaml: data.environment must be lowercase letters and digits (it's the facet suffix)"
+      elif [[ ! ${fact[$k]} =~ ^[a-z0-9]+(-[a-z0-9]+)*$ ]]; then
+        err "$d/facts/facts.yaml: data.$k must be lowercase letters, digits and '-'"
+      fi
+    done
+    role=${fact[role]} envname=${fact[environment]}
+    if [[ -n $role ]]; then
+      [[ -d bootstrap/bases/$role ]] || err "$d/facts/facts.yaml: role '$role' has no bootstrap/bases/$role/"
+      [[ ! -f $d/argocd/kustomization.yaml ]] || grep -qxF -- "- ../../../bootstrap/bases/$role" "$d/argocd/kustomization.yaml" \
+        || err "$d/argocd/kustomization.yaml: base must be ../../../bootstrap/bases/$role (its role)"
     fi
-    if [[ -n $ctype && -n $envname ]] && [[ ! $c =~ ^$envname-$ctype-[a-z0-9]+-[0-9]+$ ]]; then
-      err "$d: cluster name must be <environment>-<clusterType>-<region>-<id>, e.g. $envname-$ctype-east-1"
+    if [[ -n $role && -n $envname ]] && [[ ! $c =~ ^$envname-$role-[a-z0-9]+-[0-9]+$ ]]; then
+      err "$d: cluster name must be <environment>-<role>-<region>-<id>, e.g. $envname-$role-east-1"
     fi
-    [[ -n $envname ]] || err "$d/facts/facts.yaml: data.environment is not set"
     [[ $(yq -r '.metadata.annotations["config.kubernetes.io/local-config"] // ""' "$d/facts/facts.yaml") == "true" ]] \
       || err "$d/facts/facts.yaml: missing annotation config.kubernetes.io/local-config: \"true\""
-    [[ $envname-$ctype != "$PER_CLUSTER_PROFILE" ]] \
-      || err "$d/facts/facts.yaml: <environment>-<clusterType> can't be '$PER_CLUSTER_PROFILE' (reserved profile name)"
-    if [[ -n $ctype && -n $envname ]]; then
-      profile_names[$ctype]=1 profile_names[$envname]=1 profile_names[$envname-$ctype]=1
+    if [[ -n $envname ]]; then
+      facet_names[environment/$envname]=1
+      for k in "${FACET_KEYS[@]:1}"; do
+        [[ -n ${fact[$k]} ]] && facet_names[$k/${fact[$k]}]=1 facet_names[$k/${fact[$k]}-$envname]=1
+      done
     fi
+    unset fact
   fi
   # facts/ and argocd/ kustomizations must be identical across clusters (argocd/ up to its base).
   for f in facts/kustomization.yaml argocd/kustomization.yaml; do
@@ -163,39 +171,63 @@ for d in apps/*/; do
   for e in "$d"/* "$d"/.[!.]*; do
     [[ -e $e ]] || continue
     case $(basename "$e") in
-      argocd.yaml|base|components|profiles|clusters) ;;
-      *) err "$e: not allowed; an app has only argocd.yaml, base/, components/, profiles/ and clusters/" ;;
+      argocd.yaml|base|components|facets|clusters) ;;
+      *) err "$e: not allowed; an app has only argocd.yaml, base/, components/, facets/ and clusters/" ;;
     esac
   done
-  # Components: modular pieces that profiles use; never in a join directly.
+  # Every Component dir under facets/: <key>/<value>, cluster/<cluster>, or per-cluster.
+  facet_dirs=()
+  for e in "$d"/facets/*/; do
+    [[ -d $e ]] || continue
+    e=${e%/}
+    name=$(basename "$e")
+    if [[ $name == "$CLUSTER_FACET" ]]; then
+      for v in "$e"/*/; do
+        [[ -d $v ]] || continue
+        v=${v%/}
+        facet_dirs+=("$v")
+        if [[ -d clusters/$(basename "$v") ]]; then
+          warnings+=("$v: cluster facet (one-off exception)")
+        else
+          warnings+=("$v: matches no cluster (no cluster named $(basename "$v"))")
+        fi
+      done
+    elif printf '%s\n' "${FACET_KEYS[@]}" | grep -qxF "$name"; then
+      for v in "$e"/*/; do
+        [[ -d $v ]] || continue
+        v=${v%/}
+        facet_dirs+=("$v")
+        [[ -n ${facet_names[$name/$(basename "$v")]:-} ]] \
+          || warnings+=("$v: matches no cluster (no cluster has $name: $(basename "$v")$([[ $name == environment ]] || echo ", with or without an -<environment> suffix"))")
+      done
+    else
+      facet_dirs+=("$e")
+      [[ $name == "$PER_CLUSTER_FACET" ]] \
+        || warnings+=("$e: matches no cluster (facets/ holds ${FACET_KEYS[*]}, $CLUSTER_FACET and $PER_CLUSTER_FACET)")
+    fi
+  done
+  for f in "${facet_dirs[@]+"${facet_dirs[@]}"}"; do
+    [[ $(yq -r '.kind // ""' "$f/kustomization.yaml" 2>/dev/null) == Component ]] \
+      || err "$f: needs a kustomization.yaml with kind: Component"
+    [[ ! -e $f/argocd.yaml ]] || err "$f/argocd.yaml: Argo CD settings are only set in $d/argocd.yaml"
+  done
+  # Components: modular pieces that facets use; never in a join directly.
+  declare -A used=()
+  for f in "${facet_dirs[@]+"${facet_dirs[@]}"}" "$d"/components/*/; do
+    f=${f%/}
+    [[ -f $f/kustomization.yaml ]] || continue
+    while IFS= read -r ref; do
+      [[ -n $ref ]] && used[$(realpath -m "$f/$ref")]=1
+    done < <(yq -r '.components // [] | .[]' "$f/kustomization.yaml" 2>/dev/null)
+  done
   for comp in "$d"/components/*/; do
     [[ -d $comp ]] || continue
     comp=${comp%/}
     [[ $(yq -r '.kind // ""' "$comp/kustomization.yaml" 2>/dev/null) == Component ]] \
       || err "$comp: needs a kustomization.yaml with kind: Component"
-    used=false
-    for k in "$d"/profiles/*/kustomization.yaml "$d"/components/*/kustomization.yaml; do
-      [[ -f $k && $k != "$comp/kustomization.yaml" ]] || continue
-      C="../../components/$(basename "$comp")" yq -e '(.components // []) | any_c(. == strenv(C))' "$k" >/dev/null 2>&1 \
-        && { used=true; break; }
-    done
-    $used || warnings+=("$comp: not used by any profile")
+    [[ -n ${used[$(realpath -m "$comp")]:-} ]] || warnings+=("$comp: not used by any facet")
   done
-  for p in "$d"/profiles/*/; do
-    [[ -d $p ]] || continue
-    p=${p%/}
-    name=$(basename "$p")
-    [[ $(yq -r '.kind // ""' "$p/kustomization.yaml" 2>/dev/null) == Component ]] \
-      || err "$p: needs a kustomization.yaml with kind: Component"
-    [[ ! -e $p/argocd.yaml ]] || err "$p/argocd.yaml: Argo CD settings are only set in $d/argocd.yaml"
-    if [[ $name == "$PER_CLUSTER_PROFILE" ]]; then
-      :
-    elif [[ -d clusters/$name ]]; then
-      warnings+=("$p: cluster-name profile (one-off exception)")
-    elif [[ -z ${profile_names[$name]:-} ]]; then
-      warnings+=("$p: matches no cluster (profiles are <environment>, <clusterType>, <environment>-<clusterType> or a cluster name)")
-    fi
-  done
+  unset used
 done
 
 for w in "${warnings[@]+"${warnings[@]}"}"; do warn "$w"; done

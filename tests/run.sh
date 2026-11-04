@@ -120,12 +120,12 @@ expect_eq "prune override keeps other defaults" '{"enabled":true,"prune":false,"
 yq -i '.sync.automated.enabled = "no"' "$d/apps/logging/argocd.yaml"
 expect_fail "non-boolean enabled" "$d/scripts/generate" prod-workload-east-1
 expect_eq "logging@east-2 full" \
-  '{"app":"logging","cluster":"prod-workload-east-2","profiles":["prod-workload","prod-workload-east-2"],"sync":{"automated":{"enabled":true,"prune":true,"selfHeal":true},"wave":"10"}}' \
+  '{"app":"logging","cluster":"prod-workload-east-2","facets":["role/workload-prod","cluster/prod-workload-east-2"],"sync":{"automated":{"enabled":true,"prune":true,"selfHeal":true},"wave":"10"}}' \
   "$(cat "$ROOT/apps/logging/clusters/prod-workload-east-2/argocd.json")"
 
-t T8 "removing an app's last matching profile removes its joins"
+t T8 "removing an app's last matching facet removes its joins"
 d=$(copy_repo)
-rm -r "$d/apps/logging/profiles/qa-workload"
+rm -r "$d/apps/logging/facets/role/workload-qa"
 expect_ok "generate" "$d/scripts/generate"
 [[ ! -e $d/apps/logging/clusters/qa-workload-east-1 ]] || fail "apps/logging/clusters/qa-workload-east-1 not deleted"
 [[ -e $d/apps/logging/clusters/prod-workload-east-1 ]] || fail "apps/logging/clusters/prod-workload-east-1 deleted"
@@ -138,28 +138,32 @@ expect_fail "generate --check" "$d/scripts/generate" --check
 expect_fail "lint" "$d/scripts/lint"
 grep -q 'patches' "$d/apps/logging/clusters/prod-workload-east-1/kustomization.yaml" || fail "--check modified the tree"
 
-t T10 "bad profiles"
+t T10 "bad facets"
 d=$(copy_repo)
-mkdir -p "$d/apps/logging/profiles/workload" && touch "$d/apps/logging/profiles/workload/README"
-expect_fail "profile without kustomization.yaml" "$d/scripts/generate"
-grep -q "logging.*apps/logging/profiles/workload/" "$LOG" || fail "error doesn't name app and path: $(cat "$LOG")"
-expect_fail "lint: profile without kustomization.yaml" "$d/scripts/lint"
+mkdir -p "$d/apps/logging/facets/role/workload" && touch "$d/apps/logging/facets/role/workload/README"
+expect_fail "facet without kustomization.yaml" "$d/scripts/generate"
+grep -q "logging.*apps/logging/facets/role/workload/" "$LOG" || fail "error doesn't name app and path: $(cat "$LOG")"
+expect_fail "lint: facet without kustomization.yaml" "$d/scripts/lint"
 d=$(copy_repo)
-echo 'sync: {wave: "5"}' >"$d/apps/logging/profiles/prod-workload/argocd.yaml"
-expect_fail "lint: argocd.yaml in a profile" "$d/scripts/lint"
+echo 'sync: {wave: "5"}' >"$d/apps/logging/facets/role/workload-prod/argocd.yaml"
+expect_fail "lint: argocd.yaml in a facet" "$d/scripts/lint"
 grep -q "Argo CD settings are only set in apps/logging/argocd.yaml" "$LOG" || fail "lint doesn't explain: $(cat "$LOG")"
 d=$(copy_repo)
-mkdir -p "$d/apps/logging/profiles/qa-hub" && cp "$d/apps/cert-manager/profiles/qa/kustomization.yaml" "$d/apps/logging/profiles/qa-hub/"
-expect_ok "lint: profile matching no cluster" "$d/scripts/lint"
-grep -q "apps/logging/profiles/qa-hub: matches no cluster" "$LOG" || fail "lint doesn't warn: $(cat "$LOG")"
+for f in role/workload-staging environment/prod-prod platform/gcp cluster/prod-nope-east-9 nope; do
+  mkdir -p "$d/apps/logging/facets/$f" && cp "$d/apps/cert-manager/facets/environment/qa/kustomization.yaml" "$d/apps/logging/facets/$f/"
+done
+expect_ok "lint: facets matching no cluster" "$d/scripts/lint"
+for f in role/workload-staging environment/prod-prod platform/gcp cluster/prod-nope-east-9 nope; do
+  grep -q "apps/logging/facets/$f: matches no cluster" "$LOG" || fail "lint doesn't warn about $f: $(cat "$LOG")"
+done
 
 t T11 "new-cluster"
 d=$(copy_repo)
-expect_ok "new-cluster" "$d/scripts/new-cluster" prod-workload-west-1 --from prod-workload-east-1 --domain apps.west1.example.com
+expect_ok "new-cluster" "$d/scripts/new-cluster" prod-workload-west-1 --from prod-workload-east-1 --domain west1.example.com
 expect_eq "facts name" "prod-workload-west-1" "$(yq -r .data.name "$d/clusters/prod-workload-west-1/facts/facts.yaml")"
-expect_eq "facts domain" "apps.west1.example.com" "$(yq -r .data.domain "$d/clusters/prod-workload-west-1/facts/facts.yaml")"
-expect_eq "clusterType/environment copied" "workload prod" \
-  "$(yq -r '[.data.clusterType, .data.environment] | join(" ")' "$d/clusters/prod-workload-west-1/facts/facts.yaml")"
+expect_eq "facts domain" "west1.example.com" "$(yq -r .data.domain "$d/clusters/prod-workload-west-1/facts/facts.yaml")"
+expect_eq "facet facts copied" "prod workload standard us-east-1 aws" \
+  "$(yq -r '[.data.environment, .data.role, .data.topology, .data.region, .data.platform] | join(" ")' "$d/clusters/prod-workload-west-1/facts/facts.yaml")"
 expect_eq "joins" "cert-manager logging monitoring" "$(joins_for "$d" prod-workload-west-1)"
 expect_eq "no pins copied" "" "$(env_keys "$d/clusters/prod-workload-west-1/argocd/revisions.env")"
 expect_ok "render" "$d/scripts/render" logging prod-workload-west-1
@@ -277,54 +281,67 @@ d=$(copy_repo)
 mkdir -p "$d/tenants/team-b/clusters/nope" && echo '{}' >"$d/tenants/team-b/clusters/nope/argocd.json"
 expect_fail "lint rejects an unknown cluster" "$d/scripts/lint"
 
-t T18 "profile selection"
+t T18 "facet selection"
 aj_in() { yq -p=json -o=yaml -r "$4" "$1/apps/$2/clusters/$3/argocd.json"; }
-expect_eq "qa env-type profile" "qa-workload" "$(aj logging qa-workload-east-1 '.profiles | join(",")')"
-expect_eq "prod profile on hub" "prod" "$(aj monitoring prod-hub-east-1 '.profiles | join(",")')"
-expect_eq "prod profile replicas" "2" "$("$S/render" monitoring prod-hub-east-1 | kind_field /dev/stdin Deployment .spec.replicas)"
-expect_eq "join component order" \
-  "../../../../clusters/prod-workload-east-2/facts ../../profiles/prod ../../profiles/per-cluster ../../profiles/prod-workload-east-2" \
-  "$(yq -r '.components | join(" ")' "$ROOT/apps/monitoring/clusters/prod-workload-east-2/kustomization.yaml")"
-expect_eq "cluster-name profile selects" "prod-workload-east-2" "$(aj gpu-operator prod-workload-east-2 '.profiles | join(",")')"
-empty_profile() { # <repo> <app> <profile>
-  mkdir -p "$1/apps/$2/profiles/$3"
-  printf 'apiVersion: kustomize.config.k8s.io/v1alpha1\nkind: Component\nresources: []\n' >"$1/apps/$2/profiles/$3/kustomization.yaml"
+facets_of() { aj_in "$1" "$2" "$3" '.facets | join(",")'; }
+empty_facet() { # <repo> <app> <facet>
+  mkdir -p "$1/apps/$2/facets/$3"
+  printf 'apiVersion: kustomize.config.k8s.io/v1alpha1\nkind: Component\nresources: []\n' >"$1/apps/$2/facets/$3/kustomization.yaml"
 }
+expect_eq "env-suffixed role facet (qa)" "role/workload-qa" "$(facets_of "$ROOT" logging qa-workload-east-1)"
+expect_eq "env-suffixed role facet (prod)" "role/workload-prod" "$(facets_of "$ROOT" logging prod-workload-east-1)"
+expect_eq "environment facet on hub" "environment/prod" "$(facets_of "$ROOT" monitoring prod-hub-east-1)"
+expect_eq "environment/prod replicas" "2" "$("$S/render" monitoring prod-hub-east-1 | kind_field /dev/stdin Deployment .spec.replicas)"
+expect_eq "platform facet selects" "prod-workload-east-2" "$(ls "$ROOT/apps/gpu-operator/clusters")"
+expect_eq "topology/compact after environment/prod" \
+  "../../../../clusters/prod-workload-east-2/facts ../../facets/environment/prod ../../facets/topology/compact ../../facets/per-cluster" \
+  "$(yq -r '.components | join(" ")' "$ROOT/apps/monitoring/clusters/prod-workload-east-2/kustomization.yaml")"
 d=$(copy_repo)
-for p in workload prod; do empty_profile "$d" logging "$p"; done
+for f in environment/prod role/workload role/workload-prod topology/compact topology/compact-prod \
+         region/us-east-2 region/us-east-2-prod platform/baremetal platform/baremetal-prod; do
+  empty_facet "$d" logging "$f"
+done
 expect_ok "generate" "$d/scripts/generate"
-expect_eq "all matching profiles, env/type/env-type/per-cluster/cluster order" \
-  "../../../../clusters/prod-workload-east-2/facts ../../profiles/prod ../../profiles/workload ../../profiles/prod-workload ../../profiles/per-cluster ../../profiles/prod-workload-east-2" \
+expect_eq "every matching facet, in order" \
+  "../../../../clusters/prod-workload-east-2/facts ../../facets/environment/prod ../../facets/role/workload ../../facets/role/workload-prod ../../facets/topology/compact ../../facets/topology/compact-prod ../../facets/region/us-east-2 ../../facets/region/us-east-2-prod ../../facets/platform/baremetal ../../facets/platform/baremetal-prod ../../facets/per-cluster ../../facets/cluster/prod-workload-east-2" \
   "$(yq -r '.components | join(" ")' "$d/apps/logging/clusters/prod-workload-east-2/kustomization.yaml")"
-expect_eq "argocd.json profiles" "prod,workload,prod-workload,prod-workload-east-2" \
-  "$(aj_in "$d" logging prod-workload-east-2 '.profiles | join(",")')"
-for p in hub prod-hub prod-hub-east-1; do
+expect_eq "argocd.json facets" \
+  "environment/prod,role/workload,role/workload-prod,topology/compact,topology/compact-prod,region/us-east-2,region/us-east-2-prod,platform/baremetal,platform/baremetal-prod,cluster/prod-workload-east-2" \
+  "$(facets_of "$d" logging prod-workload-east-2)"
+expect_eq "role/workload reaches qa too" "role/workload,role/workload-qa" "$(facets_of "$d" logging qa-workload-east-1)"
+for f in role/hub environment/prod cluster/prod-hub-east-1 platform/aws; do
   d=$(copy_repo)
-  empty_profile "$d" logging "$p"
-  expect_ok "generate with logging/$p" "$d/scripts/generate"
-  expect_eq "logging/$p selects prod-hub-east-1" "cert-manager logging monitoring" "$(joins_for "$d" prod-hub-east-1)"
+  empty_facet "$d" logging "$f"
+  expect_ok "generate with logging/$f" "$d/scripts/generate"
+  expect_eq "logging/$f selects prod-hub-east-1" "cert-manager logging monitoring" "$(joins_for "$d" prod-hub-east-1)"
   expect_ok "render logging on prod-hub-east-1" "$d/scripts/render" logging prod-hub-east-1
   expect_eq "per-cluster applied" "logging.apps.hub1.example.com" "$(kind_field "$LOG" Route .spec.host)"
   expect_eq "CLUSTER_NAME" "prod-hub-east-1" "$(kind_field "$LOG" Deployment '.spec.template.spec.containers[0].env[] | select(.name == "CLUSTER_NAME") | .value')"
 done
+d=$(copy_repo)
+rm -r "$d/apps/logging/facets/role" "$d/apps/logging/facets/cluster"
+expect_ok "generate with only per-cluster" "$d/scripts/generate"
+expect_eq "per-cluster doesn't select" "" "$(ls "$d/apps/logging/clusters" 2>/dev/null)"
 d=$(copy_repo)
 mkdir -p "$d/apps/gpu-operator/components/hub"
 printf 'apiVersion: kustomize.config.k8s.io/v1alpha1\nkind: Component\nresources: []\n' >"$d/apps/gpu-operator/components/hub/kustomization.yaml"
 expect_ok "generate with an unused component" "$d/scripts/generate"
 expect_eq "a component doesn't select" "cert-manager monitoring" "$(joins_for "$d" prod-hub-east-1)"
 expect_ok "lint" "$d/scripts/lint"
-grep -q "apps/gpu-operator/components/hub: not used by any profile" "$LOG" || fail "lint doesn't warn: $(cat "$LOG")"
+grep -q "apps/gpu-operator/components/hub: not used by any facet" "$LOG" || fail "lint doesn't warn: $(cat "$LOG")"
+grep -q "components/canary: not used" "$LOG" && fail "lint warns about a used component: $(cat "$LOG")"
 d=$(copy_repo)
-mv "$d/apps/logging/profiles/per-cluster" "$d/apps/logging/per-cluster"
+mv "$d/apps/logging/facets/per-cluster" "$d/apps/logging/per-cluster"
 expect_fail "lint: unknown dir in an app" "$d/scripts/lint"
 grep -q "apps/logging/per-cluster: not allowed" "$LOG" || fail "lint doesn't explain: $(cat "$LOG")"
 d=$(copy_repo)
-rm -r "$d/apps/gpu-operator/profiles/prod-workload-east-2"
-expect_ok "generate without gpu-operator's only profile" "$d/scripts/generate"
-expect_eq "gpu-operator runs nowhere" "" "$(ls "$d/apps/gpu-operator/clusters" 2>/dev/null)"
+yq -i 'del(.data.platform)' "$d/clusters/qa-workload-east-1/facts/facts.yaml"
+expect_fail "generate: no platform" "$d/scripts/generate"
+grep -q "data.platform is not set" "$LOG" || fail "generate doesn't explain: $(cat "$LOG")"
+expect_fail "lint: no platform" "$d/scripts/lint"
 d=$(copy_repo)
-yq -i '.data.clusterType = "workload"' "$d/clusters/prod-hub-east-1/facts/facts.yaml"
-expect_fail "lint: base must match clusterType" "$d/scripts/lint"
+yq -i '.data.role = "workload"' "$d/clusters/prod-hub-east-1/facts/facts.yaml"
+expect_fail "lint: base must match role" "$d/scripts/lint"
 grep -q "base must be ../../../bootstrap/bases/workload" "$LOG" || fail "lint doesn't explain the base mismatch"
 d=$(copy_repo)
 yq -i 'del(.data.environment)' "$d/clusters/qa-workload-east-1/facts/facts.yaml"
@@ -335,18 +352,20 @@ d=$(copy_repo)
 echo 'apps: {}' >"$d/clusters/prod-workload-east-1/apps.yaml"
 expect_fail "lint: apps.yaml is rejected" "$d/scripts/lint"
 d=$(copy_repo)
-expect_ok "new-cluster --type hub" "$d/scripts/new-cluster" qa-hub-east-1 --from qa-workload-east-1 --type hub
+expect_ok "new-cluster --role hub" "$d/scripts/new-cluster" qa-hub-east-1 --from qa-workload-east-1 --role hub --platform rosa
 expect_eq "hub base" "1" "$(grep -cxF -- '- ../../../bootstrap/bases/hub' "$d/clusters/qa-hub-east-1/argocd/kustomization.yaml")"
 expect_eq "qa-hub-east-1 joins" "cert-manager monitoring" "$(joins_for "$d" qa-hub-east-1)"
-expect_eq "qa-hub-east-1 profiles" "qa" "$(aj_in "$d" monitoring qa-hub-east-1 '.profiles | join(",")')"
+expect_eq "qa-hub-east-1 facets" "environment/qa" "$(facets_of "$d" monitoring qa-hub-east-1)"
+expect_eq "qa-hub-east-1 facts" "qa hub sno us-east-1 rosa" \
+  "$(yq -r '[.data.environment, .data.role, .data.topology, .data.region, .data.platform] | join(" ")' "$d/clusters/qa-hub-east-1/facts/facts.yaml")"
 expect_ok "lint" "$d/scripts/lint"
-expect_fail "new-cluster name not matching type/environment" "$d/scripts/new-cluster" prod-workload-east-9 --from qa-workload-east-1
+expect_fail "new-cluster name not matching role/environment" "$d/scripts/new-cluster" prod-workload-east-9 --from qa-workload-east-1
 [[ ! -e $d/clusters/prod-workload-east-9 ]] || fail "new-cluster made a misnamed cluster"
 d2=$(copy_repo)
 yq -i '.data.environment = "qa"' "$d2/clusters/prod-workload-east-1/facts/facts.yaml"
-expect_fail "lint: name must match environment/clusterType" "$d2/scripts/lint"
-grep -q "cluster name must be <environment>-<clusterType>-<region>-<id>" "$LOG" || fail "lint doesn't explain the naming rule"
-expect_fail "new-cluster unknown type" "$d/scripts/new-cluster" qa-nope-east-1 --from qa-workload-east-1 --type nope
+expect_fail "lint: name must match environment/role" "$d2/scripts/lint"
+grep -q "cluster name must be <environment>-<role>-<region>-<id>" "$LOG" || fail "lint doesn't explain the naming rule"
+expect_fail "new-cluster unknown role" "$d/scripts/new-cluster" qa-nope-east-1 --from qa-workload-east-1 --role nope
 [[ ! -e $d/clusters/qa-nope-east-1 ]] || fail "new-cluster left a half-made cluster"
 
 echo

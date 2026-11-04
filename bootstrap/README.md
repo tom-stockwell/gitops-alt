@@ -22,19 +22,19 @@ bootstrap/
     cluster-config/         one Application per apps/<app>/clusters/<cluster>/argocd.json
     tenant-config/          one Application per tenants/<tenant>/clusters/<cluster>/argocd.json
   appset-revisions/         default revision for every ApplicationSet (all main); local-config
-  bases/<clusterType>/      the ApplicationSets each cluster type runs
+  bases/<role>/      the ApplicationSets each role runs
     hub/                    cluster-config
     workload/               cluster-config + tenant-config
   revisions/                Component: fills every ApplicationSet's placeholders from
                             appset-revisions + cluster facts (skips ones not in the base)
 clusters/<cluster>/argocd/
-  kustomization.yaml        uses bootstrap/bases/<clusterType>; otherwise identical for every cluster
+  kustomization.yaml        uses bootstrap/bases/<role>; otherwise identical for every cluster
   revisions.env             this cluster's pins (overrides the defaults key by key)
 ```
 
 Run `kustomize build clusters/<cluster>/argocd` to see exactly what a cluster's root
-Application applies. A cluster's base must match the `clusterType` in its facts (lint checks
-this); `make new-cluster ... TYPE=<clusterType>` sets both.
+Application applies. A cluster's base must match the `role` in its facts (lint checks
+this); `make new-cluster ... ROLE=<role>` sets both.
 
 ## Promotion and rollback
 

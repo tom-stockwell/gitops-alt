@@ -1,1 +1,1 @@
-{"app":"monitoring","cluster":"prod-workload-east-2","profiles":["prod","prod-workload-east-2"],"sync":{"automated":{"enabled":false,"prune":true,"selfHeal":true},"wave":"20"}}
+{"app":"monitoring","cluster":"prod-workload-east-2","facets":["environment/prod","topology/compact"],"sync":{"automated":{"enabled":false,"prune":true,"selfHeal":true},"wave":"20"}}

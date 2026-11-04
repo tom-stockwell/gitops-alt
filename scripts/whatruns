@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Show which apps run on each cluster, with their profiles and sync settings.
+# Show which apps run on each cluster, with their facets and sync settings.
 set -euo pipefail
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 # shellcheck source=lib.sh
@@ -9,8 +9,8 @@ usage() {
   cat <<USAGE
 Usage: scripts/whatruns [cluster...]
 
-Prints APP PROFILES AUTO-SYNC PRUNE SELF-HEAL WAVE per cluster (default: all clusters),
-headed by its clusterType/environment,
+Prints APP FACETS AUTO-SYNC PRUNE SELF-HEAL WAVE per cluster (default: all clusters),
+headed by its environment, role, topology, region and platform,
 sorted by wave then app. Reads the generated argocd.json files at the commit the cluster's
 cluster-config ApplicationSet is pinned to; clusters tracking main are read from the
 working tree. Clusters whose base includes tenant-config also list their tenants at that
@@ -39,7 +39,7 @@ for c in "${clusters[@]}"; do
   $first || echo
   first=false
   rev=$(appset_revision "$c" cluster-config)
-  kind="$(cluster_fact "$c" clusterType)/$(cluster_fact "$c" environment)"
+  kind=$(for k in "${FACET_KEYS[@]}"; do cluster_fact "$c" "$k"; done | paste -sd' ' -)
   if [[ $rev == main ]]; then
     echo "$c  [$kind]  (cluster-config @ main; showing working tree)"
   else
@@ -47,7 +47,7 @@ for c in "${clusters[@]}"; do
     echo "$c  [$kind]  (cluster-config @ ${rev:0:12})"
   fi
   {
-    printf 'APP\tPROFILES\tAUTO-SYNC\tPRUNE\tSELF-HEAL\tWAVE\n'
+    printf 'APP\tFACETS\tAUTO-SYNC\tPRUNE\tSELF-HEAL\tWAVE\n'
     if [[ $rev == main ]]; then
       for f in "$ROOT"/apps/*/clusters/"$c"/argocd.json; do
         [[ -f $f ]] && cat "$f"
@@ -56,7 +56,7 @@ for c in "${clusters[@]}"; do
       git -C "$ROOT" ls-tree -r --name-only "$rev" -- apps | grep -E "^apps/[^/]+/clusters/$c/argocd.json\$" \
         | while read -r f; do git -C "$ROOT" show "$rev:$f"; done
     fi | while IFS= read -r json; do
-      yq -p=json -o=yaml -r '[.app, ((.profiles // ([.overlay] + (.mixins // []))) | join(",")), .sync.automated.enabled, .sync.automated.prune, .sync.automated.selfHeal, .sync.wave] | @tsv' <<<"$json"
+      yq -p=json -o=yaml -r '[.app, ((.facets // .profiles // ([.overlay] + (.mixins // []))) | join(",")), .sync.automated.enabled, .sync.automated.prune, .sync.automated.selfHeal, .sync.wave] | @tsv' <<<"$json"
     done | LC_ALL=C sort -t$'\t' -k6,6n -k1,1
   } | awk -F'\t' '
       { for (i = 1; i <= NF; i++) { cell[NR, i] = $i; if (length($i) > w[i]) w[i] = length($i) } n = NR; nf = NF }

@@ -1,6 +1,4 @@
-# Runs without HA.
-# owner: platform-team
-# reason: not enough capacity for HA monitoring until the node pool is resized
+# No HA: compact clusters (control plane nodes are also workers) lack the capacity for it.
 apiVersion: kustomize.config.k8s.io/v1alpha1
 kind: Component
 patches:

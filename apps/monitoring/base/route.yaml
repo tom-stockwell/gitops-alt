@@ -3,5 +3,5 @@ kind: Route
 metadata:
   name: monitoring
 spec:
-  host: grafana.CLUSTER_DOMAIN
+  host: grafana.apps.CLUSTER_DOMAIN
   to: {kind: Service, name: monitoring}

@@ -6,6 +6,9 @@ metadata:
     config.kubernetes.io/local-config: "true"   # used by replacements, never emitted
 data:
   name: prod-workload-east-2
-  domain: apps.east2.example.com
-  clusterType: workload
+  domain: east2.example.com
   environment: prod
+  role: workload
+  topology: compact
+  region: us-east-2
+  platform: baremetal

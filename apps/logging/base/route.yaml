@@ -3,5 +3,5 @@ kind: Route
 metadata:
   name: logging
 spec:
-  host: logging.CLUSTER_DOMAIN       # segment after the first "." filled from facts
+  host: logging.apps.CLUSTER_DOMAIN  # CLUSTER_DOMAIN (3rd "."-separated segment) filled from facts
   to: {kind: Service, name: logging}

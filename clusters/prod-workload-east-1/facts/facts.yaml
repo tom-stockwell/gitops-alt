@@ -6,6 +6,9 @@ metadata:
     config.kubernetes.io/local-config: "true"   # used by replacements, never emitted
 data:
   name: prod-workload-east-1
-  domain: apps.east1.example.com
-  clusterType: workload
+  domain: east1.example.com
   environment: prod
+  role: workload
+  topology: standard
+  region: us-east-1
+  platform: aws

@@ -5,4 +5,4 @@ resources:
 - ../../base
 components:
 - ../../../../clusters/prod-workload-east-2/facts
-- ../../profiles/prod-workload-east-2
+- ../../facets/platform/baremetal
