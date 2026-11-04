@@ -21,17 +21,13 @@ alias check := lint
 test:
     tests/run.sh
 
-# Render a cluster overlay: just render apps/<app>/clusters/<cluster> (path tab-completes).
-render overlay:
-    scripts/render {{overlay}}
+# Render cluster overlays to stdout: just render [apps/<app>/clusters/<cluster>…] (default: every app overlay).
+render *overlays:
+    scripts/render {{ if overlays == "" { "apps/*/clusters/*" } else { overlays } }}
 
 # Remove rendered output (rendered/).
 clean:
     rm -rf rendered/*
-
-# Render everything into rendered/<cluster>/.
-render-all: clean
-    scripts/render-all rendered
 
 # Diff rendered manifests against a base ref (default origin/main).
 diff *base:

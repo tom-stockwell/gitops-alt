@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Render what Argo CD applies for one cluster overlay.
+# Render what Argo CD applies for one or more cluster overlays.
 set -euo pipefail
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 # shellcheck source=lib.sh
@@ -7,25 +7,45 @@ source "$SCRIPT_DIR/lib.sh"
 
 usage() {
   cat <<USAGE
-Usage: scripts/render <overlay-dir>
+Usage: scripts/render [-o <outdir>] <overlay-dir>...
 
-Runs kustomize build on a cluster overlay: apps/<app>/clusters/<cluster> or
-tenants/<tenant>/clusters/<cluster> (relative or absolute). Extra kustomize flags can be
+Runs kustomize build on each cluster overlay (e.g. apps/<app>/clusters/<cluster>) and prints
+the results to stdout, separated by '---'. With -o, writes each to
+<outdir>/<cluster>/<app>.yaml (tenants/<tenant>/clusters/<cluster>: tenant-<tenant>.yaml)
+instead, with its argocd.json copied alongside as .argocd.json. Extra kustomize flags can be
 passed in \$KUSTOMIZE_BUILD_OPTIONS.
 USAGE
 }
 
-case ${1:-} in -h|--help) usage; exit 0 ;; esac
-[[ $# -eq 1 ]] || { usage >&2; exit 1; }
+out=""
+dirs=()
+while [[ $# -gt 0 ]]; do
+  case $1 in
+    -h|--help) usage; exit 0 ;;
+    -o) [[ $# -ge 2 ]] || die "-o needs a value"; out=$2; shift 2 ;;
+    -*) die "unknown option: $1" ;;
+    *) dirs+=("${1%/}"); shift ;;
+  esac
+done
+[[ ${#dirs[@]} -gt 0 ]] || { usage >&2; exit 1; }
 
 require_tools kustomize
-ROOT=$(repo_root)
-dir=$(realpath -m "$1")
-[[ ${dir#"$ROOT"/} =~ ^(apps|tenants)/([^/]+)/clusters/([^/]+)$ ]] \
-  || die "not a cluster overlay: $1 (expected apps/<app>/clusters/<cluster> or tenants/<tenant>/clusters/<cluster>)"
-owner=${BASH_REMATCH[2]} cluster=${BASH_REMATCH[3]}
-[[ -d $ROOT/clusters/$cluster ]] || die "unknown cluster: $cluster"
-[[ -d $dir ]] || die "$owner doesn't run on $cluster (no ${dir#"$ROOT"/}/)"
-[[ -f $dir/kustomization.yaml ]] || die "no kustomization.yaml in ${dir#"$ROOT"/}"
-# shellcheck disable=SC2086
-kustomize build ${KUSTOMIZE_BUILD_OPTIONS:-} "$dir"
+first=true
+for dir in "${dirs[@]}"; do
+  [[ -f $dir/kustomization.yaml ]] || die "no such overlay: $dir"
+  if [[ -z $out ]]; then
+    $first || echo "---"
+    first=false
+    # shellcheck disable=SC2086
+    kustomize build ${KUSTOMIZE_BUILD_OPTIONS:-} "$dir" || die "kustomize build failed for $dir"
+    continue
+  fi
+  [[ $dir =~ (^|/)(apps|tenants)/([^/]+)/clusters/([^/]+)$ ]] \
+    || die "can't name output for $dir (expected …/apps/<app>/clusters/<cluster> or …/tenants/<tenant>/clusters/<cluster>)"
+  name=${BASH_REMATCH[3]} cluster=${BASH_REMATCH[4]}
+  [[ ${BASH_REMATCH[2]} == apps ]] || name=tenant-$name
+  mkdir -p "$out/$cluster"
+  # shellcheck disable=SC2086
+  kustomize build ${KUSTOMIZE_BUILD_OPTIONS:-} "$dir" >"$out/$cluster/$name.yaml" || die "kustomize build failed for $dir"
+  [[ ! -f $dir/argocd.json ]] || cp "$dir/argocd.json" "$out/$cluster/$name.argocd.json"
+done

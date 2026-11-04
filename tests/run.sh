@@ -237,16 +237,27 @@ t T12 "render cert-manager prod-workload-east-1"
 expect_ok "render" "$S/render" "$ROOT/apps/cert-manager/clusters/prod-workload-east-1"
 expect_eq "issuer" "letsencrypt-prod" "$(kind_field "$LOG" ConfigMap .data.issuer)"
 
-t T12b "render takes an overlay directory"
+t T12b "render takes overlay directories"
 expect_ok "relative path with trailing slash" bash -c 'cd "$1" && scripts/render apps/logging/clusters/prod-workload-east-1/' _ "$ROOT"
 expect_eq "relative path renders" "logging.apps.east1.example.com" "$(kind_field "$LOG" Route .spec.host)"
 expect_ok "tenant overlay" "$S/render" "$ROOT/tenants/team-a/clusters/prod-workload-east-2"
 expect_eq "tenant quota" "16" "$(kind_field "$LOG" ResourceQuota '.spec.hard["requests.cpu"]')"
-expect_fail "not an overlay" "$S/render" "$ROOT/apps/logging"
-grep -q "not a cluster overlay" "$LOG" || fail "render doesn't explain: $(cat "$LOG")"
-expect_fail "app not on that cluster" "$S/render" "$ROOT/apps/logging/clusters/prod-hub-east-1"
-grep -q "logging doesn't run on prod-hub-east-1" "$LOG" || fail "render doesn't explain: $(cat "$LOG")"
-expect_fail "unknown cluster" "$S/render" "$ROOT/apps/logging/clusters/nope-east-1"
+expect_fail "no overlays" "$S/render"
+for p in apps/logging apps/logging/clusters/prod-hub-east-1; do
+  expect_fail "$p isn't an overlay" "$S/render" "$ROOT/$p"
+  grep -q "no such overlay: $ROOT/$p" "$LOG" || fail "render doesn't explain: $(cat "$LOG")"
+done
+expect_ok "two overlays" "$S/render" "$ROOT/apps/logging/clusters/prod-workload-east-1" "$ROOT/apps/monitoring/clusters/prod-hub-east-1"
+expect_eq "both routes" "grafana.apps.hub1.example.com logging.apps.east1.example.com" \
+  "$(yq -r 'select(.kind == "Route") | .spec.host' "$LOG" | grep -v '^---$' | sort | paste -sd' ' -)"
+expect_ok "render -o" "$S/render" -o "$OUT/o" "$ROOT/apps/logging/clusters/prod-workload-east-1/" "$ROOT/tenants/team-a/clusters/prod-workload-east-2"
+for f in prod-workload-east-1/logging.yaml prod-workload-east-1/logging.argocd.json prod-workload-east-2/tenant-team-a.yaml; do
+  [[ -s $OUT/o/$f ]] || fail "render -o didn't write $f"
+done
+expect_fail "render -o with an unnamed overlay" "$S/render" -o "$OUT/o" "$ROOT/apps/logging/facets/per-cluster"
+grep -q "can't name output" "$LOG" || fail "render doesn't explain: $(cat "$LOG")"
+expect_ok "just render (every app overlay)" just --justfile "$ROOT/justfile" render
+expect_eq "every app overlay" "$(ls -d "$ROOT"/apps/{logging,monitoring}/clusters/* | wc -l)" "$(grep -c '^kind: Deployment' "$LOG")"
 
 t T13 "diff on a clean tree"
 d=$(copy_repo)
@@ -342,9 +353,9 @@ expect_ok "render team-a on prod-workload-east-2" kustomize build "$ROOT/tenants
 expect_eq "team-a quota override" "16" "$(kind_field "$LOG" ResourceQuota '.spec.hard["requests.cpu"]')"
 expect_ok "render team-b on prod-workload-east-2" kustomize build "$ROOT/tenants/team-b/clusters/prod-workload-east-2"
 expect_eq "team-b quota" "4" "$(kind_field "$LOG" ResourceQuota '.spec.hard["requests.cpu"]')"
-expect_ok "render-all" "$S/render-all" "$OUT/rendered"
+expect_ok "render -o tenants" "$S/render" -o "$OUT/rendered" "$ROOT"/tenants/*/clusters/*
 [[ -s $OUT/rendered/prod-workload-east-2/tenant-team-a.yaml && -s $OUT/rendered/prod-workload-east-2/tenant-team-a.argocd.json ]] \
-  || fail "render-all didn't render tenants"
+  || fail "render -o didn't render tenants"
 d=$(copy_repo)
 echo '{"cluster":"prod-workload-east-2","sync":{"wave":30},"tenant":"team-b"}' >"$d/tenants/team-b/clusters/prod-workload-east-2/argocd.json"
 expect_fail "lint rejects a non-string wave" "$d/scripts/lint"

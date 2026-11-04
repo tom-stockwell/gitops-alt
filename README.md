@@ -35,7 +35,7 @@ clusters/<cluster>/
 tenants/<tenant>/          tenant config (stands in for a separate tenants repo; tenants/README.md)
 bootstrap/                 ApplicationSets, bases, revisions Component, bootstrap steps (bootstrap/README.md)
 docs/                      design notes (revision-pinning.md, revision-pinning-nested-matrix.md)
-scripts/                   generate, lint, render, render-all, diff, new-cluster, promote, bootstrap-root, whatruns
+scripts/                   generate, lint, render, diff, new-cluster, promote, bootstrap-root, whatruns
 tests/run.sh               acceptance tests (just test)
 ```
 
@@ -204,5 +204,6 @@ repo. `just build` is an alias for `just generate`.
 
 - The cluster kustomization lint checks (`facts/` and `argocd/` must be identical for every
   cluster, apart from `argocd/`'s base) compare each cluster to the alphabetically first one.
-- `just render-all` writes to `rendered/<cluster>/`. `scripts/diff` writes `rendered/manifests.diff`.
+- `just render` prints every app overlay (or the overlay directories given); `scripts/render -o <dir>`
+  writes `<dir>/<cluster>/<app>.yaml` instead. `scripts/diff` writes `rendered/manifests.diff`.
 - Developed against kustomize v5.8.1 locally. CI pins v5.4.3.
