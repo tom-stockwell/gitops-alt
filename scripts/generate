@@ -7,25 +7,21 @@ source "$SCRIPT_DIR/lib.sh"
 
 usage() {
   cat <<EOF
-Usage: scripts/generate [--check] [cluster...]
+Usage: scripts/generate [cluster...]
 
 Writes apps/<app>/clusters/<cluster>/{kustomization.yaml,argocd.json} for every app with
 a facet matching the cluster (apps/<app>/facets/<key>/<value>[-<environment>]/ for its
 environment, role, topology, region or platform fact, or apps/<app>/facets/cluster/<cluster>/), and
 deletes generated joins for apps no longer selected.
 Default: all clusters, which also deletes generated joins for clusters that no longer exist.
-
-  --check   generate into a temp copy and diff against the working tree; exit 1 on
-            any difference. Never modifies the tree.
+scripts/lint fails if any join differs from what this would write.
 EOF
 }
 
-check=false
 clusters=()
 for arg in "$@"; do
   case $arg in
     -h|--help) usage; exit 0 ;;
-    --check) check=true ;;
     -*) die "unknown option: $arg" ;;
     *) clusters+=("$arg") ;;
   esac
@@ -33,21 +29,6 @@ done
 
 require_tools yq
 ROOT=$(repo_root)
-
-if $check; then
-  tmp=$(mktemp -d)
-  cleanup_add "$tmp"
-  tar -C "$ROOT" --exclude=./.git --exclude=./rendered -cf - . | tar -C "$tmp" -xf -
-  # The copy isn't a git repo, so its scripts resolve the root from their own location.
-  "$tmp/scripts/generate" "${clusters[@]+"${clusters[@]}"}" >/dev/null || die "generate failed"
-  changes=$(diff -ruN "$ROOT/apps" "$tmp/apps" | sed -e "s|$ROOT/|a/|g" -e "s|$tmp/|b/|g" || true)
-  if [[ -n $changes ]]; then
-    echo "$changes"
-    die "generated files are out of date; run scripts/generate"
-  fi
-  echo "generated files are up to date"
-  exit 0
-fi
 
 all_clusters=false
 if [[ ${#clusters[@]} -eq 0 ]]; then

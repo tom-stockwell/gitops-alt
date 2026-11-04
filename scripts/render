@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Render what Argo CD applies for one app on one cluster.
+# Render what Argo CD applies for one cluster overlay.
 set -euo pipefail
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 # shellcheck source=lib.sh
@@ -7,21 +7,25 @@ source "$SCRIPT_DIR/lib.sh"
 
 usage() {
   cat <<USAGE
-Usage: scripts/render <app> <cluster>
+Usage: scripts/render <overlay-dir>
 
-Runs kustomize build apps/<app>/clusters/<cluster>. Extra kustomize flags can be
+Runs kustomize build on a cluster overlay: apps/<app>/clusters/<cluster> or
+tenants/<tenant>/clusters/<cluster> (relative or absolute). Extra kustomize flags can be
 passed in \$KUSTOMIZE_BUILD_OPTIONS.
 USAGE
 }
 
 case ${1:-} in -h|--help) usage; exit 0 ;; esac
-[[ $# -eq 2 ]] || { usage >&2; exit 1; }
-app=$1 cluster=$2
+[[ $# -eq 1 ]] || { usage >&2; exit 1; }
 
 require_tools kustomize
 ROOT=$(repo_root)
-[[ -d $ROOT/apps/$app ]] || die "unknown app: $app"
+dir=$(realpath -m "$1")
+[[ ${dir#"$ROOT"/} =~ ^(apps|tenants)/([^/]+)/clusters/([^/]+)$ ]] \
+  || die "not a cluster overlay: $1 (expected apps/<app>/clusters/<cluster> or tenants/<tenant>/clusters/<cluster>)"
+owner=${BASH_REMATCH[2]} cluster=${BASH_REMATCH[3]}
 [[ -d $ROOT/clusters/$cluster ]] || die "unknown cluster: $cluster"
-[[ -f $ROOT/apps/$app/clusters/$cluster/kustomization.yaml ]] || die "$app is not assigned to $cluster"
+[[ -d $dir ]] || die "$owner doesn't run on $cluster (no ${dir#"$ROOT"/}/)"
+[[ -f $dir/kustomization.yaml ]] || die "no kustomization.yaml in ${dir#"$ROOT"/}"
 # shellcheck disable=SC2086
-kustomize build ${KUSTOMIZE_BUILD_OPTIONS:-} "$ROOT/apps/$app/clusters/$cluster"
+kustomize build ${KUSTOMIZE_BUILD_OPTIONS:-} "$dir"

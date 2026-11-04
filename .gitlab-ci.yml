@@ -2,14 +2,16 @@
 default:
   image: registry.access.redhat.com/ubi9/ubi-minimal:latest
   before_script:
-    - microdnf install -y --nodocs git make tar gzip diffutils findutils >/dev/null
+    - microdnf install -y --nodocs git tar gzip diffutils findutils >/dev/null
     - curl -fsSL "https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize%2F${KUSTOMIZE_VERSION}/kustomize_${KUSTOMIZE_VERSION}_linux_amd64.tar.gz" | tar -xz -C /usr/local/bin kustomize
     - curl -fsSL -o /usr/local/bin/yq "https://github.com/mikefarah/yq/releases/download/${YQ_VERSION}/yq_linux_amd64" && chmod +x /usr/local/bin/yq
-    - kustomize version && yq --version
+    - curl -fsSL "https://github.com/casey/just/releases/download/${JUST_VERSION}/just-${JUST_VERSION}-x86_64-unknown-linux-musl.tar.gz" | tar -xz -C /usr/local/bin just
+    - kustomize version && yq --version && just --version
 
 variables:
   KUSTOMIZE_VERSION: v5.4.3
   YQ_VERSION: v4.44.3
+  JUST_VERSION: "1.59.0"
   GIT_DEPTH: "0"
 
 stages:
@@ -22,8 +24,8 @@ check:
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
   script:
-    - make check
-    - make test
+    - just check
+    - just test
 
 render-diff:
   stage: diff

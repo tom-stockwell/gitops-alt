@@ -3,7 +3,7 @@
 Every cluster runs its own Argo CD (OpenShift GitOps) with argocd-agent in
 **autonomous** mode. The hub only aggregates status; it does not push config.
 
-1. Add the cluster to git first (`make new-cluster NAME=<name> FROM=<existing> DOMAIN=<domain>`)
+1. Add the cluster to git first (`just new-cluster <name> <existing> --domain <domain>`)
    and merge it to main. A new cluster has no pins, so it tracks main until you promote it.
 2. Install the OpenShift GitOps operator and argocd-agent in autonomous mode. Use the
    cluster name (`clusters/<name>`) as the agent name so the hub's view matches the repo.
@@ -34,7 +34,7 @@ clusters/<cluster>/argocd/
 
 Run `kustomize build clusters/<cluster>/argocd` to see exactly what a cluster's root
 Application applies. A cluster's base must match the `role` in its facts (lint checks
-this); `make new-cluster ... ROLE=<role>` sets both.
+this); `just new-cluster ... --role <role>` sets both.
 
 ## Promotion and rollback
 
@@ -42,13 +42,13 @@ Each cluster pins a commit per ApplicationSet in `clusters/<cluster>/argocd/revi
 The ApplicationSet uses that commit both to find the apps and their settings and to fetch
 their manifests, so everything a cluster runs comes from one commit.
 
-- **Promote one cluster:** `make promote CLUSTER=prod-workload-east-1 REF=main` (or a tag or SHA),
-  adding `APPSET=tenant-config` to pin tenants instead. This writes the full SHA. Commit it,
+- **Promote one cluster:** `just promote prod-workload-east-1 main` (or a tag or SHA),
+  adding `--appset tenant-config` to pin tenants instead. This writes the full SHA. Commit it,
   open an MR, and the cluster moves when it merges. Then do the next cluster in its own MR.
 - **Roll back:** promote the previous SHA, or `git revert` the promote commit.
 - **Track main:** remove the cluster's line. Unset keys use `bootstrap/appset-revisions/revisions.env`.
 
-`make check` (lint) rejects pins that aren't a full SHA or `main`, that name an
+`just check` (lint) rejects pins that aren't a full SHA or `main`, that name an
 ApplicationSet the cluster's base doesn't include, or (for cluster-config) that point at a
 commit without this cluster's joins.
 

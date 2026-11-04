@@ -81,7 +81,7 @@ Lint rejects a pin for an ApplicationSet the cluster's base doesn't include.
 4. Include it in an existing base, or add a base under `bootstrap/bases/` for the new
    combination, and point the clusters that should run it at that base.
 
-`make check` fails if any cluster's rendered ApplicationSets still contain a placeholder.
+`just check` fails if any cluster's rendered ApplicationSets still contain a placeholder.
 
 ### Known gap
 

@@ -56,7 +56,11 @@ cleanup_add "$OUT"
 
 t T1 "generate is idempotent"
 expect_ok "generate" "$S/generate"
-expect_ok "generate --check" "$S/generate" --check
+d=$(copy_repo)
+expect_ok "generate a committed copy" "$d/scripts/generate"
+expect_eq "nothing changed" "" "$(git -C "$d" status --porcelain -- apps)"
+expect_ok "lint" "$d/scripts/lint"
+expect_fail "unknown option" "$S/generate" --check
 
 t T2 "lint"
 expect_ok "lint" "$S/lint"
@@ -71,7 +75,7 @@ expect_eq "qa-workload-east-1 joins" "cert-manager logging monitoring" "$(joins_
 
 t T4 "render logging prod-workload-east-2"
 r=$OUT/logging-east2.yaml
-expect_ok "render" "$S/render" logging prod-workload-east-2
+expect_ok "render" "$S/render" "$ROOT/apps/logging/clusters/prod-workload-east-2"
 cp "$LOG" "$r"
 expect_eq "route host" "logging.apps.east2.example.com" "$(kind_field "$r" Route .spec.host)"
 expect_eq "image" "quay.io/example/logging:2.4.0-rc1" "$(kind_field "$r" Deployment '.spec.template.spec.containers[0].image')"
@@ -81,7 +85,7 @@ expect_eq "cluster-facts emitted" "" "$(yq -r 'select(.metadata.name == "cluster
 
 t T5 "render logging prod-workload-east-1"
 r=$OUT/logging-east1.yaml
-expect_ok "render" "$S/render" logging prod-workload-east-1
+expect_ok "render" "$S/render" "$ROOT/apps/logging/clusters/prod-workload-east-1"
 cp "$LOG" "$r"
 expect_eq "route host" "logging.apps.east1.example.com" "$(kind_field "$r" Route .spec.host)"
 expect_eq "image" "quay.io/example/logging:2.3.0" "$(kind_field "$r" Deployment '.spec.template.spec.containers[0].image')"
@@ -90,7 +94,7 @@ expect_eq "replicas" "3" "$(kind_field "$r" Deployment .spec.replicas)"
 t T6 "render monitoring on both clusters"
 for n in 1 2; do
   r=$OUT/monitoring-east$n.yaml
-  expect_ok "render prod-workload-east-$n" "$S/render" monitoring prod-workload-east-$n
+  expect_ok "render prod-workload-east-$n" "$S/render" "$ROOT/apps/monitoring/clusters/prod-workload-east-$n"
   cp "$LOG" "$r"
   expect_eq "prod-workload-east-$n host" "grafana.apps.east$n.example.com" "$(kind_field "$r" Route .spec.host)"
 done
@@ -129,14 +133,13 @@ rm -r "$d/apps/logging/facets/role/workload-qa"
 expect_ok "generate" "$d/scripts/generate"
 [[ ! -e $d/apps/logging/clusters/qa-workload-east-1 ]] || fail "apps/logging/clusters/qa-workload-east-1 not deleted"
 [[ -e $d/apps/logging/clusters/prod-workload-east-1 ]] || fail "apps/logging/clusters/prod-workload-east-1 deleted"
-expect_ok "generate --check" "$d/scripts/generate" --check
+expect_ok "lint" "$d/scripts/lint"
 
 t T9 "drift detection"
 d=$(copy_repo)
 echo 'patches: []' >>"$d/apps/logging/clusters/prod-workload-east-1/kustomization.yaml"
-expect_fail "generate --check" "$d/scripts/generate" --check
 expect_fail "lint" "$d/scripts/lint"
-grep -q 'patches' "$d/apps/logging/clusters/prod-workload-east-1/kustomization.yaml" || fail "--check modified the tree"
+grep -q "apps/logging/clusters/prod-workload-east-1/kustomization.yaml: out of date" "$LOG" || fail "lint doesn't explain: $(cat "$LOG")"
 
 t T10 "bad facets"
 d=$(copy_repo)
@@ -176,6 +179,7 @@ done
 d=$(copy_repo)
 component_at "$d/apps/logging/facets/platform/gcp"
 expect_ok "new-cluster on gcp" "$d/scripts/new-cluster" qa-workload-west-1 --from qa-workload-east-1 --platform gcp
+expect_ok "generate qa-workload-west-1" "$d/scripts/generate" qa-workload-west-1
 expect_ok "lint: platform/gcp valid once a cluster has it" "$d/scripts/lint"
 expect_eq "platform/gcp used" "role/workload-qa,platform/gcp" \
   "$(yq -p=json -o=yaml -r '.facets | join(",")' "$d/apps/logging/clusters/qa-workload-west-1/argocd.json")"
@@ -212,22 +216,37 @@ stale "cluster removed" \
 t T11 "new-cluster"
 d=$(copy_repo)
 expect_ok "new-cluster" "$d/scripts/new-cluster" prod-workload-west-1 --from prod-workload-east-1 --domain west1.example.com
+expect_eq "script doesn't generate" "" "$(ls -d "$d"/apps/*/clusters/prod-workload-west-1 2>/dev/null)"
+rm -r "$d/clusters/prod-workload-west-1"
+expect_ok "just new-cluster" just --justfile "$d/justfile" new-cluster prod-workload-west-1 prod-workload-east-1 --domain west1.example.com
+grep -q "^prod-workload-west-1  \[prod workload" "$LOG" || fail "just new-cluster doesn't show what runs: $(cat "$LOG")"
 expect_eq "facts name" "prod-workload-west-1" "$(yq -r .data.name "$d/clusters/prod-workload-west-1/facts/facts.yaml")"
 expect_eq "facts domain" "west1.example.com" "$(yq -r .data.domain "$d/clusters/prod-workload-west-1/facts/facts.yaml")"
 expect_eq "facet facts copied" "prod workload standard us-east-1 aws" \
   "$(yq -r '[.data.environment, .data.role, .data.topology, .data.region, .data.platform] | join(" ")' "$d/clusters/prod-workload-west-1/facts/facts.yaml")"
 expect_eq "joins" "cert-manager logging monitoring" "$(joins_for "$d" prod-workload-west-1)"
 expect_eq "no pins copied" "" "$(env_keys "$d/clusters/prod-workload-west-1/argocd/revisions.env")"
-expect_ok "render" "$d/scripts/render" logging prod-workload-west-1
+expect_ok "render" "$d/scripts/render" "$d/apps/logging/clusters/prod-workload-west-1"
 expect_eq "route host" "logging.apps.west1.example.com" "$(kind_field "$LOG" Route .spec.host)"
 expect_ok "lint" "$d/scripts/lint"
-expect_ok "generate --check" "$d/scripts/generate" --check
+expect_ok "lint" "$d/scripts/lint"
 expect_fail "existing name" "$d/scripts/new-cluster" prod-workload-west-1 --from prod-workload-east-1
 expect_fail "bad name" "$d/scripts/new-cluster" Prod_West --from prod-workload-east-1
 
 t T12 "render cert-manager prod-workload-east-1"
-expect_ok "render" "$S/render" cert-manager prod-workload-east-1
+expect_ok "render" "$S/render" "$ROOT/apps/cert-manager/clusters/prod-workload-east-1"
 expect_eq "issuer" "letsencrypt-prod" "$(kind_field "$LOG" ConfigMap .data.issuer)"
+
+t T12b "render takes an overlay directory"
+expect_ok "relative path with trailing slash" bash -c 'cd "$1" && scripts/render apps/logging/clusters/prod-workload-east-1/' _ "$ROOT"
+expect_eq "relative path renders" "logging.apps.east1.example.com" "$(kind_field "$LOG" Route .spec.host)"
+expect_ok "tenant overlay" "$S/render" "$ROOT/tenants/team-a/clusters/prod-workload-east-2"
+expect_eq "tenant quota" "16" "$(kind_field "$LOG" ResourceQuota '.spec.hard["requests.cpu"]')"
+expect_fail "not an overlay" "$S/render" "$ROOT/apps/logging"
+grep -q "not a cluster overlay" "$LOG" || fail "render doesn't explain: $(cat "$LOG")"
+expect_fail "app not on that cluster" "$S/render" "$ROOT/apps/logging/clusters/prod-hub-east-1"
+grep -q "logging doesn't run on prod-hub-east-1" "$LOG" || fail "render doesn't explain: $(cat "$LOG")"
+expect_fail "unknown cluster" "$S/render" "$ROOT/apps/logging/clusters/nope-east-1"
 
 t T13 "diff on a clean tree"
 d=$(copy_repo)
@@ -343,7 +362,7 @@ empty_facet() { # <repo> <app> <facet>
 expect_eq "env-suffixed role facet (qa)" "role/workload-qa" "$(facets_of "$ROOT" logging qa-workload-east-1)"
 expect_eq "env-suffixed role facet (prod)" "role/workload-prod" "$(facets_of "$ROOT" logging prod-workload-east-1)"
 expect_eq "environment facet on hub" "environment/prod" "$(facets_of "$ROOT" monitoring prod-hub-east-1)"
-expect_eq "environment/prod replicas" "2" "$("$S/render" monitoring prod-hub-east-1 | kind_field /dev/stdin Deployment .spec.replicas)"
+expect_eq "environment/prod replicas" "2" "$("$S/render" "$ROOT/apps/monitoring/clusters/prod-hub-east-1" | kind_field /dev/stdin Deployment .spec.replicas)"
 expect_eq "platform facet selects" "prod-workload-east-2" "$(ls "$ROOT/apps/gpu-operator/clusters")"
 expect_eq "topology/compact after environment/prod" \
   "../../../../clusters/prod-workload-east-2/facts ../../facets/environment/prod ../../facets/topology/compact ../../facets/per-cluster" \
@@ -366,7 +385,7 @@ for f in role/hub environment/prod cluster/prod-hub-east-1 platform/aws; do
   empty_facet "$d" logging "$f"
   expect_ok "generate with logging/$f" "$d/scripts/generate"
   expect_eq "logging/$f selects prod-hub-east-1" "cert-manager logging monitoring" "$(joins_for "$d" prod-hub-east-1)"
-  expect_ok "render logging on prod-hub-east-1" "$d/scripts/render" logging prod-hub-east-1
+  expect_ok "render logging on prod-hub-east-1" "$d/scripts/render" "$d/apps/logging/clusters/prod-hub-east-1"
   expect_eq "per-cluster applied" "logging.apps.hub1.example.com" "$(kind_field "$LOG" Route .spec.host)"
   expect_eq "CLUSTER_NAME" "prod-hub-east-1" "$(kind_field "$LOG" Deployment '.spec.template.spec.containers[0].env[] | select(.name == "CLUSTER_NAME") | .value')"
 done
@@ -405,6 +424,7 @@ echo 'apps: {}' >"$d/clusters/prod-workload-east-1/apps.yaml"
 expect_fail "lint: apps.yaml is rejected" "$d/scripts/lint"
 d=$(copy_repo)
 expect_ok "new-cluster --role hub" "$d/scripts/new-cluster" qa-hub-east-1 --from qa-workload-east-1 --role hub --platform rosa
+expect_ok "generate qa-hub-east-1" "$d/scripts/generate" qa-hub-east-1
 expect_eq "hub base" "1" "$(grep -cxF -- '- ../../../bootstrap/bases/hub' "$d/clusters/qa-hub-east-1/argocd/kustomization.yaml")"
 expect_eq "qa-hub-east-1 joins" "cert-manager monitoring" "$(joins_for "$d" qa-hub-east-1)"
 expect_eq "qa-hub-east-1 facets" "environment/qa" "$(facets_of "$d" monitoring qa-hub-east-1)"

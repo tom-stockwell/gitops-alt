@@ -257,24 +257,24 @@ for app in "${all_apps[@]}"; do
     out=apps/$app/clusters/$c
     mapfile -t facets < <(app_facets "$app" "$c")
     if [[ ${#facets[@]} -eq 0 ]]; then
-      [[ ! -e $out ]] || err "$out: no facet of $app matches $c any more; run make generate"
+      [[ ! -e $out ]] || err "$out: no facet of $app matches $c any more; run just generate"
       continue
     fi
     if [[ ! -d $out ]]; then
-      err "$out: missing; $app's facets $(printf '%s\n' "${facets[@]}" | paste -sd, -) match $c; run make generate"
+      err "$out: missing; $app's facets $(printf '%s\n' "${facets[@]}" | paste -sd, -) match $c; run just generate"
       continue
     fi
     head -n1 "$out/kustomization.yaml" 2>/dev/null | grep -qF "$GENERATED_PREFIX" \
       || err "$out/kustomization.yaml: missing GENERATED header"
     cmp -s <(join_kustomization "$app" "$c" "${facets[@]}") "$out/kustomization.yaml" \
-      || err "$out/kustomization.yaml: out of date (expected components: $(join_kustomization "$app" "$c" "${facets[@]}" | sed -n '/^components:/,$ s|^- \.\./\.\./facets/||p' | paste -sd' ' -)); run make generate"
+      || err "$out/kustomization.yaml: out of date (expected components: $(join_kustomization "$app" "$c" "${facets[@]}" | sed -n '/^components:/,$ s|^- \.\./\.\./facets/||p' | paste -sd' ' -)); run just generate"
     cmp -s <(join_argocd_json "$app" "$c" "$sync" "${facets[@]}") "$out/argocd.json" \
-      || err "$out/argocd.json: out of date; run make generate"
+      || err "$out/argocd.json: out of date; run just generate"
   done
 done
 for dir in apps/*/clusters/*/; do
   [[ -d $dir ]] || continue
-  [[ -d clusters/$(basename "$dir") ]] || err "${dir%/}: cluster $(basename "$dir") doesn't exist; run make generate"
+  [[ -d clusters/$(basename "$dir") ]] || err "${dir%/}: cluster $(basename "$dir") doesn't exist; run just generate"
 done
 
 for w in "${warnings[@]+"${warnings[@]}"}"; do warn "$w"; done

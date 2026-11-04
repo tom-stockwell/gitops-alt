@@ -15,9 +15,9 @@ Usage: scripts/new-cluster <name> --from <existing> [--domain <domain>] [--envir
 
 Copies clusters/<existing> to clusters/<name> and sets its facts: name, plus domain and the
 facet facts (environment, role, topology, region, platform) where given; the rest are kept
-from <existing>. Points its ApplicationSets at bootstrap/bases/<role>, resets revisions.env
-to no pins (tracks main), generates its joins (every app with a facet matching it) and shows
-what will run there.
+from <existing>. Points its ApplicationSets at bootstrap/bases/<role> and resets
+revisions.env to no pins (tracks main). It doesn't generate the cluster's overlays; run
+scripts/generate <name> afterwards (\`just new-cluster\` does both and shows what will run).
 USAGE
 }
 
@@ -66,7 +66,4 @@ sed -i 's|"true" # used by replacements|"true"   # used by replacements|' "$fact
 sed -i 's|^\(- \.\./\.\./\.\./bootstrap/bases/\)[^/[:space:]]*$|\1'"$role"'|' "$ROOT/clusters/$name/argocd/kustomization.yaml"
 # Pins don't carry over: the source's pinned commits don't contain this cluster yet.
 grep -E '^[[:space:]]*(#|$)' "$ROOT/clusters/$from/argocd/revisions.env" >"$ROOT/clusters/$name/argocd/revisions.env" || true
-
-"$SCRIPT_DIR/generate" "$name"
-echo
-"$SCRIPT_DIR/whatruns" "$name"
+echo "created clusters/$name"

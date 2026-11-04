@@ -9,7 +9,7 @@ Kustomize config for several OpenShift clusters, each running its own Argo CD
 Thin **generated** kustomizations ("joins") at `apps/<app>/clusters/<cluster>/` connect the two, so
 
 ```sh
-kustomize build apps/<app>/clusters/<cluster>     # or: scripts/render <app> <cluster>
+kustomize build apps/<app>/clusters/<cluster>     # or: just render apps/<app>/clusters/<cluster>
 ```
 
 is exactly what Argo CD applies on that cluster.
@@ -36,11 +36,11 @@ tenants/<tenant>/          tenant config (stands in for a separate tenants repo;
 bootstrap/                 ApplicationSets, bases, revisions Component, bootstrap steps (bootstrap/README.md)
 docs/                      design notes (revision-pinning.md, revision-pinning-nested-matrix.md)
 scripts/                   generate, lint, render, render-all, diff, new-cluster, promote, bootstrap-root, whatruns
-tests/run.sh               acceptance tests (make test)
+tests/run.sh               acceptance tests (just test)
 ```
 
-**Never edit `apps/*/clusters/*`.** Add or change a facet and run `make generate`. CI fails
-if the joins are out of date (`make check`).
+**Never edit `apps/*/clusters/*`.** Add or change a facet and run `just generate`. CI fails
+if the joins are out of date (`just check`).
 
 A join (the cluster overlay) holds the app's `base`, the cluster facts, every facet of the app
 that matches the cluster, and `facets/per-cluster`. It never holds patches.
@@ -139,11 +139,11 @@ Lint checks facets against the facts the clusters actually have:
   Add the cluster first, then its facets.
 - **Warning:** a valid facet no single cluster matches, e.g. `role/hub-qa` while there's no qa hub.
   The same goes for a component no facet uses.
-- **Error:** a cluster overlay that doesn't match the facets, i.e. `make generate` wasn't run. That
+- **Error:** a cluster overlay that doesn't match the facets, i.e. `just generate` wasn't run. That
   covers an overlay that's missing, one that should be gone, or one whose components or
   `argocd.json` differ from what generate would write.
 
-`make generate` also deletes overlays nothing selects any more, including all overlays of a
+`just generate` also deletes overlays nothing selects any more, including all overlays of a
 deleted cluster.
 
 ### Components
@@ -172,37 +172,37 @@ file, so every Application gets the full `spec.syncPolicy.automated` block with 
 
 Each cluster pins a commit per ApplicationSet in `clusters/<cluster>/argocd/revisions.env`
 (default: main). A change reaches a cluster only when that cluster's pin moves, which happens
-through an MR (`make promote`). Pin and roll out clusters one at a time. See
+through an MR (`just promote`). Pin and roll out clusters one at a time. See
 [docs/revision-pinning.md](docs/revision-pinning.md).
 
 ## Common tasks
 
 | Task | How |
 |---|---|
-| See what runs where | `make whatruns` (or `scripts/whatruns <cluster>`): reads each cluster's pinned commit |
-| Preview the rendered effect of your change | `make diff` (renders `origin/main` and your working tree; writes `rendered/manifests.diff`) |
-| Add an app | Create `apps/<app>/{argocd.yaml,base/}`, at least one facet under `facets/` (built from `components/`), and `facets/per-cluster/` if it uses cluster facts. Then `make generate` |
-| Add a cluster | `make new-cluster NAME=prod-workload-west-1 FROM=prod-workload-east-1 DOMAIN=west1.example.com` (optionally `ENVIRONMENT=`, `ROLE=`, `TOPOLOGY=`, `REGION=`, `PLATFORM=`; the rest are copied from `FROM`), then follow `bootstrap/README.md` |
-| Put an app on a set of clusters | Add `apps/<app>/facets/<key>/<value>/`, `make generate` |
-| Take an app off a set of clusters | Delete the facet that selects it there, `make generate` |
-| Change an app for an environment | Edit `apps/<app>/facets/environment/<env>/` (or `<key>/<value>-<env>/`), `make generate` |
+| See what runs where | `just whatruns` (or `scripts/whatruns <cluster>`): reads each cluster's pinned commit |
+| Preview the rendered effect of your change | `just diff` (renders `origin/main` and your working tree; writes `rendered/manifests.diff`) |
+| Add an app | Create `apps/<app>/{argocd.yaml,base/}`, at least one facet under `facets/` (built from `components/`), and `facets/per-cluster/` if it uses cluster facts. Then `just generate` |
+| Add a cluster | `just new-cluster prod-workload-west-1 prod-workload-east-1 --domain west1.example.com` (optionally `--environment`, `--role`, `--topology`, `--region`, `--platform`; the rest are copied from the source cluster), then follow `bootstrap/README.md` |
+| Put an app on a set of clusters | Add `apps/<app>/facets/<key>/<value>/`, `just generate` |
+| Take an app off a set of clusters | Delete the facet that selects it there, `just generate` |
+| Change an app for an environment | Edit `apps/<app>/facets/environment/<env>/` (or `<key>/<value>-<env>/`), `just generate` |
 | Promote a change through environments | Add it to `facets/<key>/<value>-qa/`, then `<value>-prod/`, then move it into `<value>/` |
-| Change Argo CD settings for an app | Edit `apps/<app>/argocd.yaml` (applies on every cluster), `make generate` |
+| Change Argo CD settings for an app | Edit `apps/<app>/argocd.yaml` (applies on every cluster), `just generate` |
 | Run a canary on one cluster | `apps/<app>/facets/cluster/<cluster>/` with the canary change (see `apps/logging/facets/cluster/prod-workload-east-2/`). Delete it afterwards |
 | Give a cluster tenants | Make it a `workload` cluster, add `tenants/<tenant>/clusters/<c>/` (see `tenants/README.md`) |
-| Roll out a change | Merge it to main, then `make promote CLUSTER=<c> REF=main` and open an MR, one cluster at a time. Roll back by promoting the previous SHA. See `bootstrap/README.md` |
+| Roll out a change | Merge it to main, then `just promote <c> main` and open an MR, one cluster at a time. Roll back by promoting the previous SHA. See `bootstrap/README.md` |
 
 ## Tooling
 
-kustomize v5.4+ (the standalone binary), mikefarah yq v4, bash 4+, git. dyff is optional
-and is used by `scripts/diff` when installed. `make check` runs `generate --check` and `lint`;
-`make test` runs the acceptance tests in temp copies of the repo.
+kustomize v5.4+ (the standalone binary), mikefarah yq v4, bash 4+, git, and
+[just](https://github.com/casey/just) for the recipes (each wraps a script in `scripts/`;
+`just` lists them). dyff is optional and is used by `scripts/diff` when installed. `just check`
+runs lint, which also fails if any overlay isn't what `just generate` would write; `just test` runs the acceptance tests in temp copies of the
+repo. `just build` is an alias for `just generate`.
 
 ## Notes
 
-- `generate --check` regenerates in a temp copy and diffs the whole `apps/` tree. Only
-  generated files can differ there.
 - The cluster kustomization lint checks (`facts/` and `argocd/` must be identical for every
   cluster, apart from `argocd/`'s base) compare each cluster to the alphabetically first one.
-- `make render-all` writes to `rendered/<cluster>/`. `scripts/diff` writes `rendered/manifests.diff`.
+- `just render-all` writes to `rendered/<cluster>/`. `scripts/diff` writes `rendered/manifests.diff`.
 - Developed against kustomize v5.8.1 locally. CI pins v5.4.3.
