@@ -13,8 +13,7 @@ Prints APP FACETS AUTO-SYNC PRUNE SELF-HEAL WAVE per cluster (default: all clust
 by its environment, role, topology, region and platform, sorted by wave then app. Reads the
 cluster's overlays (their facets) and the apps' argocd.yaml at the commit the cluster's
 cluster-config ApplicationSet is pinned to; clusters tracking main are read from the working
-tree. Clusters whose base includes tenant-config also list their tenants at that
-ApplicationSet's pin.
+tree.
 USAGE
 }
 
@@ -74,19 +73,4 @@ for c in "${clusters[@]}"; do
   } | awk -F'\t' '
       { for (i = 1; i <= NF; i++) { cell[NR, i] = $i; if (length($i) > w[i]) w[i] = length($i) } n = NR; nf = NF }
       END { for (r = 1; r <= n; r++) { line = "  "; for (i = 1; i <= nf; i++) line = line sprintf(i < nf ? "%-" w[i] + 2 "s" : "%s", cell[r, i]); print line } }'
-  if cluster_appsets "$c" | grep -qxF tenant-config; then
-    trev=$(appset_revision "$c" tenant-config)
-    if [[ $trev == main ]]; then
-      tenants=$(for d in "$ROOT"/tenants/*/clusters/"$c"/; do
-        if [[ -d $d ]]; then basename "$(dirname "$(dirname "$d")")"; fi
-      done)
-      label="main; working tree"
-    else
-      git -C "$ROOT" cat-file -e "$trev^{commit}" 2>/dev/null || die "$c: pinned commit $trev not found locally; fetch it"
-      tenants=$(git -C "$ROOT" ls-tree -d -r --name-only "$trev" -- tenants | sed -nE "s|^tenants/([^/]+)/clusters/$c\$|\1|p")
-      label=${trev:0:12}
-    fi
-    tenants=$(echo $tenants | sed 's/ /, /g')
-    echo "  tenants (tenant-config @ $label): ${tenants:-none}"
-  fi
 done

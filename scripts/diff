@@ -44,11 +44,11 @@ git -C "$ROOT" worktree add -q --detach "$worktree" "$base" || die "git worktree
 remove_worktree() { git -C "$ROOT" worktree remove --force "$worktree" 2>/dev/null || true; }
 trap 'remove_worktree; _cleanup' EXIT
 
-# render_tree <outdir> <repo-dir>: every app and tenant overlay in <repo-dir> into <outdir>.
+# render_tree <outdir> <repo-dir>: every app overlay in <repo-dir> into <outdir>.
 render_tree() {
   local overlays
   shopt -s nullglob
-  overlays=("$2"/apps/*/clusters/* "$2"/tenants/*/clusters/*)
+  overlays=("$2"/apps/*/clusters/*)
   shopt -u nullglob
   mkdir -p "$1"
   [[ ${#overlays[@]} -eq 0 ]] || "$SCRIPT_DIR/render" -o "$1" "${overlays[@]}"

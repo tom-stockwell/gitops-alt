@@ -130,24 +130,6 @@ for c in "${clusters[@]}"; do
   fi
 done
 
-# Tenants: tenants/<tenant>/clusters/<cluster>/ is a kustomization for an existing cluster. Argo CD
-# settings are the same for every tenant and live in the tenant-config ApplicationSet.
-for dir in tenants/*/clusters/*/; do
-  [[ -d $dir ]] || continue
-  dir=${dir%/}
-  c=$(basename "$dir")
-  [[ -f $dir/kustomization.yaml ]] || err "$dir: missing kustomization.yaml"
-  for f in argocd.json argocd.yaml; do
-    [[ ! -e $dir/$f ]] || err "$dir/$f: not used; tenant Argo CD settings are in bootstrap/appsets/tenant-config"
-  done
-  if [[ ! -d clusters/$c ]]; then
-    err "$dir: no cluster named '$c'"
-    continue
-  fi
-  [[ -n ${has_appset[$c/tenant-config]:-} ]] \
-    || warnings+=("$dir: $c's base doesn't include tenant-config, so this isn't deployed")
-done
-
 # known_values <key>: the values clusters have for a facet fact, comma-separated.
 known_values() {
   local kv

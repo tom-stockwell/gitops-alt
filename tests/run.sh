@@ -247,8 +247,6 @@ expect_eq "issuer" "letsencrypt-prod" "$(kind_field "$LOG" ConfigMap .data.issue
 t T12b "render takes overlay directories"
 expect_ok "relative path with trailing slash" bash -c 'cd "$1" && scripts/render apps/logging/clusters/prod-workload-east-1/' _ "$ROOT"
 expect_eq "relative path renders" "logging.apps.east1.example.com" "$(kind_field "$LOG" Route .spec.host)"
-expect_ok "tenant overlay" "$S/render" "$ROOT/tenants/team-a/clusters/prod-workload-east-2"
-expect_eq "tenant quota" "16" "$(kind_field "$LOG" ResourceQuota '.spec.hard["requests.cpu"]')"
 expect_fail "no overlays" "$S/render"
 for p in apps/logging apps/logging/clusters/prod-hub-east-1; do
   expect_fail "$p isn't an overlay" "$S/render" "$ROOT/$p"
@@ -257,8 +255,8 @@ done
 expect_ok "two overlays" "$S/render" "$ROOT/apps/logging/clusters/prod-workload-east-1" "$ROOT/apps/monitoring/clusters/prod-hub-east-1"
 expect_eq "both routes" "grafana.apps.hub1.example.com logging.apps.east1.example.com" \
   "$(yq -r 'select(.kind == "Route") | .spec.host' "$LOG" | grep -v '^---$' | sort | paste -sd' ' -)"
-expect_ok "render -o" "$S/render" -o "$OUT/o" "$ROOT/apps/logging/clusters/prod-workload-east-1/" "$ROOT/tenants/team-a/clusters/prod-workload-east-2"
-for f in prod-workload-east-1/logging.yaml prod-workload-east-2/tenant-team-a.yaml; do
+expect_ok "render -o" "$S/render" -o "$OUT/o" "$ROOT/apps/logging/clusters/prod-workload-east-1/" "$ROOT/apps/monitoring/clusters/prod-workload-east-2"
+for f in prod-workload-east-1/logging.yaml prod-workload-east-2/monitoring.yaml; do
   [[ -s $OUT/o/$f ]] || fail "render -o didn't write $f"
 done
 [[ -z $(find "$OUT/o" -name '*.json') ]] || fail "render -o wrote Argo CD settings"
@@ -340,7 +338,6 @@ expect_ok "build prod-workload-east-2" kustomize build "$d/clusters/prod-workloa
 expect_eq "tenant-config pinned" "$sha" "$(yq -r 'select(.metadata.name == "tenant-config") | .spec.template.spec.source.targetRevision' "$LOG")"
 expect_eq "cluster-config still main" "main" "$(yq -r 'select(.metadata.name == "cluster-config") | .spec.template.spec.source.targetRevision' "$LOG")"
 expect_ok "whatruns prod-workload-east-2" "$d/scripts/whatruns" prod-workload-east-2
-grep -q "tenants (tenant-config @ ${sha:0:12}): team-a, team-b" "$LOG" || fail "whatruns doesn't list pinned tenants: $(tail -n1 "$LOG")"
 expect_fail "promote an appset outside the base" "$d/scripts/promote" prod-hub-east-1 HEAD --appset tenant-config
 expect_ok "promote again" "$d/scripts/promote" prod-workload-east-1 HEAD
 expect_eq "no duplicate key" "cluster-config" "$(env_keys "$d/clusters/prod-workload-east-1/argocd/revisions.env")"
@@ -360,23 +357,6 @@ done
 cp "$OUT/env.bak" "$env"
 echo "tenant-config=$sha" >>"$d/clusters/prod-hub-east-1/argocd/revisions.env"
 expect_fail "lint rejects a pin outside the base" "$d/scripts/lint"
-
-t T17 "tenants"
-expect_ok "render team-a on prod-workload-east-2" kustomize build "$ROOT/tenants/team-a/clusters/prod-workload-east-2"
-expect_eq "team-a quota override" "16" "$(kind_field "$LOG" ResourceQuota '.spec.hard["requests.cpu"]')"
-expect_ok "render team-b on prod-workload-east-2" kustomize build "$ROOT/tenants/team-b/clusters/prod-workload-east-2"
-expect_eq "team-b quota" "4" "$(kind_field "$LOG" ResourceQuota '.spec.hard["requests.cpu"]')"
-expect_ok "render -o tenants" "$S/render" -o "$OUT/rendered" "$ROOT"/tenants/*/clusters/*
-[[ -s $OUT/rendered/prod-workload-east-2/tenant-team-a.yaml ]] \
-  || fail "render -o didn't render tenants"
-d=$(copy_repo)
-echo '{}' >"$d/tenants/team-b/clusters/prod-workload-east-2/argocd.json"
-expect_fail "lint rejects a tenant argocd.json" "$d/scripts/lint"
-grep -q "tenants/team-b/clusters/prod-workload-east-2/argocd.json: not used" "$LOG" || fail "lint doesn't explain: $(cat "$LOG")"
-d=$(copy_repo)
-mkdir -p "$d/tenants/team-b/clusters/nope" && cp "$d/tenants/team-b/clusters/prod-workload-east-2/kustomization.yaml" "$d/tenants/team-b/clusters/nope/"
-expect_fail "lint rejects an unknown cluster" "$d/scripts/lint"
-grep -q "tenants/team-b/clusters/nope: no cluster named 'nope'" "$LOG" || fail "lint doesn't explain: $(cat "$LOG")"
 
 t T18 "facet selection"
 
