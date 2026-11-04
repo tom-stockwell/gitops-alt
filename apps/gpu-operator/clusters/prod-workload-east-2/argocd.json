@@ -1,1 +1,0 @@
-{"app":"gpu-operator","cluster":"prod-workload-east-2","facets":["platform/baremetal"],"sync":{"automated":{"enabled":true,"prune":true,"selfHeal":true},"wave":"0"}}

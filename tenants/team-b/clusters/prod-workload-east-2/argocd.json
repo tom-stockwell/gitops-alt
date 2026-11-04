@@ -1,1 +1,0 @@
-{"cluster":"prod-workload-east-2","sync":{"automated":{"enabled":true,"prune":false,"selfHeal":true},"wave":"30"},"tenant":"team-b"}

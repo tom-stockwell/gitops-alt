@@ -9,7 +9,8 @@ usage() {
   cat <<EOF
 Usage: scripts/generate [cluster...]
 
-Writes apps/<app>/clusters/<cluster>/{kustomization.yaml,argocd.json} for every app with
+Writes apps/<app>/clusters/<cluster>/kustomization.yaml, and argocd.yaml as a symlink to the
+app's argocd.yaml, for every app with
 a facet matching the cluster (apps/<app>/facets/<key>/<value>[-<environment>]/ for its
 environment, role, topology, region or platform fact, or apps/<app>/facets/cluster/<cluster>/), and
 deletes generated joins for apps no longer selected.
@@ -62,13 +63,8 @@ for c in "${clusters[@]}"; do
     [[ ! -d $pc || -f $pc/kustomization.yaml ]] \
       || die "$c: app '$app': apps/$app/facets/$PER_CLUSTER_FACET/ has no kustomization.yaml"
     sync=$(resolve_sync "$app")
-    SYNC=$sync yq -e -n 'env(SYNC) | [
-        (.automated.enabled | tag) == "!!bool",
-        (.automated.prune | tag) == "!!bool",
-        (.automated.selfHeal | tag) == "!!bool",
-        .wave != null] | all' >/dev/null 2>&1 \
-      || die "$c: app '$app': resolved sync needs boolean automated.{enabled,prune,selfHeal} and a 'wave', got $sync"
-    echo "$sync" >"$work/$c.$app.sync.json"
+    sync_valid "$sync" \
+      || die "app '$app': apps/$app/argocd.yaml sync needs boolean automated.{enabled,prune,selfHeal} and a 'wave', got $sync"
   done
   mapfile -t apps <"$work/$c.apps"
   # Stale joins must carry the generated header before we delete them.
@@ -119,7 +115,8 @@ for c in "${clusters[@]}"; do
     mkdir -p "$out"
     mapfile -t facets <"$work/$c.$app.facets"
     join_kustomization "$app" "$c" "${facets[@]}" >"$out/kustomization.yaml"
-    join_argocd_json "$app" "$c" "$(cat "$work/$c.$app.sync.json")" "${facets[@]}" >"$out/argocd.json"
+    rm -f "$out/argocd.json"   # replaced by the argocd.yaml symlink
+    ln -sfn "$ARGOCD_LINK" "$out/argocd.yaml"
     echo "wrote apps/$app/clusters/$c"
   done
 done

@@ -19,8 +19,8 @@ root Application (per cluster, tracks main)
        + clusters/<cluster>/argocd/revisions.env   merged over the defaults
        + clusters/<cluster>/facts          cluster-facts ConfigMap (name)
        + bootstrap/revisions               replacements fill the placeholders
-  → ApplicationSet cluster-config @ <its pin> → apps/*/clusters/<cluster>/argocd.json
-  → ApplicationSet tenant-config  @ <its pin> → tenants/*/clusters/<cluster>/argocd.json   (workload clusters)
+  → ApplicationSet cluster-config @ <its pin> → apps/*/clusters/<cluster>/argocd.yaml
+  → ApplicationSet tenant-config  @ <its pin> → tenants/*/clusters/<cluster>/        (workload clusters)
 ```
 
 - `appset-revisions` and `cluster-facts` are local-config ConfigMaps. They feed the

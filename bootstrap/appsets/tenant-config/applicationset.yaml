@@ -1,4 +1,7 @@
-# Tenant config: one Application per tenants/<tenant>/clusters/<cluster>/argocd.json.
+# Tenant config: one Application per tenant directory tenants/<tenant>/clusters/<cluster>/, named
+# tenant-<tenant> (path segment 1). Every tenant gets the same Argo CD settings, set below: wave
+# 30, automated sync, and no pruning, so removing a resource from git never deletes a tenant's
+# namespace (and everything in it) automatically.
 #
 # REVISION and CLUSTER are placeholders, filled in by bootstrap/revisions from the cluster's
 # appset-revisions ConfigMap (key tenant-config) and cluster-facts. Pinned and promoted
@@ -16,13 +19,13 @@ spec:
   - git:
       repoURL: https://git.example.com/platform/gitops.git
       revision: REVISION
-      files:
-      - path: tenants/*/clusters/CLUSTER/argocd.json
+      directories:
+      - path: tenants/*/clusters/CLUSTER
   template:
     metadata:
-      name: 'tenant-{{.tenant}}'
+      name: 'tenant-{{index .path.segments 1}}'
       annotations:
-        argocd.argoproj.io/sync-wave: '{{.sync.wave}}'
+        argocd.argoproj.io/sync-wave: "30"
     spec:
       project: default
       source:
@@ -31,13 +34,8 @@ spec:
         path: '{{.path.path}}'
       destination:
         server: https://kubernetes.default.svc
-
-  # templatePatch so the values render as booleans, not strings. `dig` falls back to true
-  # only when a key is missing; unlike `default`, it keeps an explicit false.
-  templatePatch: |
-    spec:
       syncPolicy:
         automated:
-          enabled: {{ dig "sync" "automated" "enabled" true . }}
-          prune: {{ dig "sync" "automated" "prune" true . }}
-          selfHeal: {{ dig "sync" "automated" "selfHeal" true . }}
+          enabled: true
+          prune: false
+          selfHeal: true

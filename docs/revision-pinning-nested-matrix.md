@@ -39,7 +39,7 @@ What you give up:
 ```
 cluster Secret (local)                       → .name, .server, .metadata.labels
   → git (main)  clusters/<name>/revisions.yaml → the cluster's pins
-  → git (<pin>) apps/*/clusters/<name>/argocd.json → one Application per app
+  → git (<pin>) apps/*/clusters/<name>/argocd.yaml → one Application per app
 ```
 
 ### The pins: `clusters/<cluster>/revisions.yaml`
@@ -111,10 +111,10 @@ spec:
           repoURL: https://git.example.com/platform/gitops.git
           revision: '{{ dig "cluster-config" "main" . }}'
           files:
-          - path: 'apps/*/clusters/{{.name}}/argocd.json'
+          - path: 'apps/*/clusters/{{.name}}/argocd.yaml'
   template:
     metadata:
-      name: '{{.app}}'
+      name: '{{index .path.segments 1}}'
       annotations:
         argocd.argoproj.io/sync-wave: '{{.sync.wave}}'
     spec:
@@ -137,8 +137,8 @@ spec:
 `tenant-config` is the same pattern, with three differences:
 - the cluster selector adds `gitops.example.com/tenants: "true"`;
 - it reads the `tenant-config` key: `{{ dig "tenant-config" "main" . }}`;
-- its generator path is `tenants/*/clusters/{{.name}}/argocd.json`, and Applications are named
-  `tenant-{{.tenant}}`.
+- it uses a git directories generator on `tenants/*/clusters/{{.name}}`, Applications are named
+  `tenant-{{index .path.segments 1}}`, and the sync settings are fixed in the template.
 
 Notes on the templates:
 - **Hyphenated keys need `dig` (or `index`):** `{{.cluster-config}}` isn't valid template

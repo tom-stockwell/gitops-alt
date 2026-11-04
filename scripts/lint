@@ -130,24 +130,22 @@ for c in "${clusters[@]}"; do
   fi
 done
 
-# Tenants: tenants/<tenant>/clusters/<cluster>/ needs a kustomization and a matching argocd.json.
-for j in tenants/*/clusters/*/argocd.json; do
-  [[ -f $j ]] || continue
-  dir=$(dirname "$j")
+# Tenants: tenants/<tenant>/clusters/<cluster>/ is a kustomization for an existing cluster. Argo CD
+# settings are the same for every tenant and live in the tenant-config ApplicationSet.
+for dir in tenants/*/clusters/*/; do
+  [[ -d $dir ]] || continue
+  dir=${dir%/}
   c=$(basename "$dir")
-  t=$(basename "$(dirname "$(dirname "$dir")")")
   [[ -f $dir/kustomization.yaml ]] || err "$dir: missing kustomization.yaml"
+  for f in argocd.json argocd.yaml; do
+    [[ ! -e $dir/$f ]] || err "$dir/$f: not used; tenant Argo CD settings are in bootstrap/appsets/tenant-config"
+  done
   if [[ ! -d clusters/$c ]]; then
     err "$dir: no cluster named '$c'"
     continue
   fi
   [[ -n ${has_appset[$c/tenant-config]:-} ]] \
     || warnings+=("$dir: $c's base doesn't include tenant-config, so this isn't deployed")
-  [[ $(yq -p=json -o=yaml -r '.tenant // ""' "$j") == "$t" ]] || err "$j: tenant must be '$t'"
-  [[ $(yq -p=json -o=yaml -r '.cluster // ""' "$j") == "$c" ]] || err "$j: cluster must be '$c'"
-  yq -p=json -e '[(.sync.wave | tag) == "!!str",
-                  ((.sync.automated // {}) | to_entries | all_c(.value | tag == "!!bool"))] | all' "$j" >/dev/null 2>&1 \
-    || err "$j: needs sync.wave as a string; sync.automated values must be booleans"
 done
 
 # known_values <key>: the values clusters have for a facet fact, comma-separated.
@@ -162,7 +160,12 @@ known_values() {
 for d in apps/*/; do
   d=${d%/}
   app=$(basename "$d")
-  [[ -f $d/argocd.yaml ]] || err "$d: missing argocd.yaml"
+  if [[ ! -f $d/argocd.yaml ]]; then
+    err "$d: missing argocd.yaml"
+  else
+    sync=$(resolve_sync "$app")
+    sync_valid "$sync" || err "$d/argocd.yaml: sync needs boolean automated.{enabled,prune,selfHeal} and a 'wave', got $sync"
+  fi
   [[ -d $d/base ]] || err "$d: missing base/"
   for e in "$d"/* "$d"/.[!.]*; do
     [[ -e $e ]] || continue
@@ -251,7 +254,7 @@ done
 # exist exactly when some facet matches the cluster.
 mapfile -t all_apps < <(list_apps)
 for app in "${all_apps[@]}"; do
-  sync=$(resolve_sync "$app" 2>/dev/null) || continue   # missing argocd.yaml is reported above
+  [[ -f apps/$app/argocd.yaml ]] || continue   # reported above
   for c in "${clusters[@]}"; do
     [[ -n ${facts_ok[$c]:-} ]] || continue
     out=apps/$app/clusters/$c
@@ -268,8 +271,12 @@ for app in "${all_apps[@]}"; do
       || err "$out/kustomization.yaml: missing GENERATED header"
     cmp -s <(join_kustomization "$app" "$c" "${facets[@]}") "$out/kustomization.yaml" \
       || err "$out/kustomization.yaml: out of date (expected components: $(join_kustomization "$app" "$c" "${facets[@]}" | sed -n '/^components:/,$ s|^- \.\./\.\./facets/||p' | paste -sd' ' -)); run just generate"
-    cmp -s <(join_argocd_json "$app" "$c" "$sync" "${facets[@]}") "$out/argocd.json" \
-      || err "$out/argocd.json: out of date; run just generate"
+    [[ -L $out/argocd.yaml && $(readlink "$out/argocd.yaml") == "$ARGOCD_LINK" ]] \
+      || err "$out/argocd.yaml: must be a symlink to $ARGOCD_LINK; run just generate"
+    for f in "$out"/* "$out"/.[!.]*; do
+      [[ -e $f || -L $f ]] || continue
+      case $(basename "$f") in kustomization.yaml|argocd.yaml) ;; *) err "$f: not generated; run just generate" ;; esac
+    done
   done
 done
 for dir in apps/*/clusters/*/; do

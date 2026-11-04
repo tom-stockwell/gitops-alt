@@ -1,4 +1,6 @@
-# The cluster's apps: one Application per apps/<app>/clusters/<cluster>/argocd.json.
+# The cluster's apps: one Application per apps/<app>/clusters/<cluster>/argocd.yaml. Each is a
+# symlink to apps/<app>/argocd.yaml (the app's sync settings); the Application is named after
+# <app>, path segment 1.
 #
 # REVISION and CLUSTER are placeholders, filled in by bootstrap/revisions from the cluster's
 # appset-revisions ConfigMap and cluster-facts. The same revision is used for the git generator
@@ -17,10 +19,10 @@ spec:
       repoURL: https://git.example.com/platform/gitops.git
       revision: REVISION
       files:
-      - path: apps/*/clusters/CLUSTER/argocd.json
+      - path: apps/*/clusters/CLUSTER/argocd.yaml
   template:
     metadata:
-      name: '{{.app}}'
+      name: '{{index .path.segments 1}}'
       annotations:
         argocd.argoproj.io/sync-wave: '{{.sync.wave}}'
     spec:

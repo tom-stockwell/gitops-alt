@@ -1,1 +1,0 @@
-{"app":"cert-manager","cluster":"qa-workload-east-1","facets":["environment/qa"],"sync":{"automated":{"enabled":true,"prune":true,"selfHeal":true},"wave":"0"}}

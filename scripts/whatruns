@@ -9,11 +9,11 @@ usage() {
   cat <<USAGE
 Usage: scripts/whatruns [cluster...]
 
-Prints APP FACETS AUTO-SYNC PRUNE SELF-HEAL WAVE per cluster (default: all clusters),
-headed by its environment, role, topology, region and platform,
-sorted by wave then app. Reads the generated argocd.json files at the commit the cluster's
-cluster-config ApplicationSet is pinned to; clusters tracking main are read from the
-working tree. Clusters whose base includes tenant-config also list their tenants at that
+Prints APP FACETS AUTO-SYNC PRUNE SELF-HEAL WAVE per cluster (default: all clusters), headed
+by its environment, role, topology, region and platform, sorted by wave then app. Reads the
+cluster's overlays (their facets) and the apps' argocd.yaml at the commit the cluster's
+cluster-config ApplicationSet is pinned to; clusters tracking main are read from the working
+tree. Clusters whose base includes tenant-config also list their tenants at that
 ApplicationSet's pin.
 USAGE
 }
@@ -33,6 +33,22 @@ if [[ ${#clusters[@]} -eq 0 ]]; then
   mapfile -t clusters < <(list_clusters)
 fi
 
+# at_rev <rev> <path>: a file's content at <rev>, or in the working tree for main.
+at_rev() {
+  if [[ $1 == main ]]; then cat "$ROOT/$2"; else git -C "$ROOT" show "$1:$2"; fi
+}
+
+# overlay_apps <rev> <cluster>: apps with an overlay for the cluster at <rev> (working tree for main).
+overlay_apps() {
+  if [[ $1 == main ]]; then
+    for d in "$ROOT"/apps/*/clusters/"$2"/; do
+      if [[ -d $d ]]; then basename "$(dirname "$(dirname "$d")")"; fi
+    done
+  else
+    git -C "$ROOT" ls-tree -d -r --name-only "$1" -- apps | sed -nE "s|^apps/([^/]+)/clusters/$2\$|\1|p"
+  fi
+}
+
 first=true
 for c in "${clusters[@]}"; do
   [[ -d $ROOT/clusters/$c ]] || die "unknown cluster: $c"
@@ -48,15 +64,12 @@ for c in "${clusters[@]}"; do
   fi
   {
     printf 'APP\tFACETS\tAUTO-SYNC\tPRUNE\tSELF-HEAL\tWAVE\n'
-    if [[ $rev == main ]]; then
-      for f in "$ROOT"/apps/*/clusters/"$c"/argocd.json; do
-        [[ -f $f ]] && cat "$f"
-      done
-    else
-      git -C "$ROOT" ls-tree -r --name-only "$rev" -- apps | grep -E "^apps/[^/]+/clusters/$c/argocd.json\$" \
-        | while read -r f; do git -C "$ROOT" show "$rev:$f"; done
-    fi | while IFS= read -r json; do
-      yq -p=json -o=yaml -r '[.app, ((.facets // .profiles // ([.overlay] + (.mixins // []))) | join(",")), .sync.automated.enabled, .sync.automated.prune, .sync.automated.selfHeal, .sync.wave] | @tsv' <<<"$json"
+    for app in $(overlay_apps "$rev" "$c"); do
+      facets=$(at_rev "$rev" "apps/$app/clusters/$c/kustomization.yaml" \
+        | sed -n "s|^- \.\./\.\./facets/||p" | grep -vxF "$PER_CLUSTER_FACET" | paste -sd, -)
+      at_rev "$rev" "apps/$app/argocd.yaml" | sync_with_defaults \
+        | APP=$app FACETS=$facets yq -p=json -o=yaml -r \
+            '[strenv(APP), strenv(FACETS), .automated.enabled, .automated.prune, .automated.selfHeal, .wave] | @tsv'
     done | LC_ALL=C sort -t$'\t' -k6,6n -k1,1
   } | awk -F'\t' '
       { for (i = 1; i <= NF; i++) { cell[NR, i] = $i; if (length($i) > w[i]) w[i] = length($i) } n = NR; nf = NF }
@@ -64,14 +77,13 @@ for c in "${clusters[@]}"; do
   if cluster_appsets "$c" | grep -qxF tenant-config; then
     trev=$(appset_revision "$c" tenant-config)
     if [[ $trev == main ]]; then
-      tenants=$(for j in "$ROOT"/tenants/*/clusters/"$c"/argocd.json; do
-        [[ -f $j ]] || continue
-        basename "$(dirname "$(dirname "$(dirname "$j")")")"
+      tenants=$(for d in "$ROOT"/tenants/*/clusters/"$c"/; do
+        if [[ -d $d ]]; then basename "$(dirname "$(dirname "$d")")"; fi
       done)
       label="main; working tree"
     else
       git -C "$ROOT" cat-file -e "$trev^{commit}" 2>/dev/null || die "$c: pinned commit $trev not found locally; fetch it"
-      tenants=$(git -C "$ROOT" ls-tree -r --name-only "$trev" -- tenants | sed -nE "s|^tenants/([^/]+)/clusters/$c/argocd.json\$|\1|p")
+      tenants=$(git -C "$ROOT" ls-tree -d -r --name-only "$trev" -- tenants | sed -nE "s|^tenants/([^/]+)/clusters/$c\$|\1|p")
       label=${trev:0:12}
     fi
     tenants=$(echo $tenants | sed 's/ /, /g')

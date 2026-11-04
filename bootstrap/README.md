@@ -19,8 +19,8 @@ Every cluster runs its own Argo CD (OpenShift GitOps) with argocd-agent in
 ```
 bootstrap/
   appsets/<name>/           one ApplicationSet each, with REVISION/CLUSTER placeholders
-    cluster-config/         one Application per apps/<app>/clusters/<cluster>/argocd.json
-    tenant-config/          one Application per tenants/<tenant>/clusters/<cluster>/argocd.json
+    cluster-config/         one Application per apps/<app>/clusters/<cluster>/argocd.yaml
+    tenant-config/          one Application per tenants/<tenant>/clusters/<cluster>/
   appset-revisions/         default revision for every ApplicationSet (all main); local-config
   bases/<role>/      the ApplicationSets each role runs
     hub/                    cluster-config
@@ -57,6 +57,11 @@ add more ApplicationSets, and [the nested-matrix alternative](../docs/revision-p
 to use when cluster Secrets can be set up reliably.
 
 ## Assumptions to verify against your Argo CD version
+
+- The cluster-config git generator reads `apps/*/clusters/<cluster>/argocd.yaml`, which is a
+  symlink to `../../argocd.yaml`. Argo CD's repo-server follows symlinks that stay inside the
+  repo (it rejects ones that point outside), so this should work, but check it on your version.
+  The Application name comes from `.path.segments` (the git files generator's path parameters).
 
 - `spec.templatePatch` (used so `syncPolicy.automated` values render as booleans) needs
   Argo CD 2.10 or later.

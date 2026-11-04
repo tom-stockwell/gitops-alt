@@ -27,13 +27,13 @@ replacements:
   - select: {kind: ApplicationSet, name: tenant-config}
     fieldPaths: *revisions
 
-# Cluster name: generator paths are e.g. <dir>/*/clusters/CLUSTER/argocd.json, so segment 3.
+# Cluster name: generator paths are <dir>/*/clusters/CLUSTER[/<file>], so segment 3.
 - source: {kind: ConfigMap, name: cluster-facts, fieldPath: data.name}
   targets:
   - select: {kind: ApplicationSet, name: cluster-config}
     fieldPaths: &namepath [spec.generators.0.git.files.0.path]
-    options: {delimiter: "/", index: 3}          # apps/*/clusters/CLUSTER/argocd.json
+    options: {delimiter: "/", index: 3}          # apps/*/clusters/CLUSTER/argocd.yaml
 
   - select: {kind: ApplicationSet, name: tenant-config}
-    fieldPaths: *namepath
-    options: {delimiter: "/", index: 3}          # tenants/*/clusters/CLUSTER/argocd.json
+    fieldPaths: [spec.generators.0.git.directories.0.path]
+    options: {delimiter: "/", index: 3}          # tenants/*/clusters/CLUSTER

@@ -51,6 +51,10 @@ joins_for() { # <repo> <cluster> → sorted app names
   done | LC_ALL=C sort | paste -sd' ' -
 }
 
+facets_of() { # <repo> <app> <cluster> → the overlay's facets, comma-separated (as whatruns shows them)
+  sed -n 's|^- \.\./\.\./facets/||p' "$1/apps/$2/clusters/$3/kustomization.yaml" | grep -vxF per-cluster | paste -sd, -
+}
+
 OUT=$(mktemp -d)
 cleanup_add "$OUT"
 
@@ -101,8 +105,9 @@ done
 expect_eq "prod-workload-east-1 replicas" "2" "$(kind_field "$OUT/monitoring-east1.yaml" Deployment .spec.replicas)"
 expect_eq "prod-workload-east-2 replicas" "1" "$(kind_field "$OUT/monitoring-east2.yaml" Deployment .spec.replicas)"
 
-t T7 "argocd.json values"
-aj() { yq -p=json -o=yaml -r "$3" "$ROOT/apps/$1/clusters/$2/argocd.json"; }
+t T7 "argocd settings"
+# aj <app> <cluster> <expr>: the overlay's argocd.yaml (a symlink to the app's) with defaults, as {sync: …}.
+aj() { sync_with_defaults <"$ROOT/apps/$1/clusters/$2/argocd.yaml" | yq -p=json -o=yaml -r "{\"sync\": .} | $3"; }
 expect_eq "logging@east-1 automated.enabled" "true" "$(aj logging prod-workload-east-1 .sync.automated.enabled)"
 expect_eq "logging@east-1 wave" "10" "$(aj logging prod-workload-east-1 .sync.wave)"
 expect_eq "logging@east-1 wave type" "!!str" "$(aj logging prod-workload-east-1 '.sync.wave | tag')"
@@ -111,7 +116,7 @@ expect_eq "monitoring@east-1 automated.enabled" "false" "$(aj monitoring prod-wo
 expect_eq "monitoring@east-2 automated.enabled" "false" "$(aj monitoring prod-workload-east-2 .sync.automated.enabled)"
 expect_eq "cert-manager wave" "0" "$(aj cert-manager prod-workload-east-1 .sync.wave)"
 for c in prod-workload-east-1 prod-workload-east-2; do
-  for f in "$ROOT"/apps/*/clusters/$c/argocd.json; do
+  for f in "$ROOT"/apps/*/clusters/$c/argocd.yaml; do
     app=$(basename "$(dirname "$(dirname "$(dirname "$f")")")")
     expect_eq "$app@$c prune/selfHeal default" "true true" "$(aj "$app" $c '[.sync.automated.prune, .sync.automated.selfHeal] | join(" ")')"
   done
@@ -120,12 +125,14 @@ d=$(copy_repo)
 yq -i '.sync.automated.prune = false' "$d/apps/logging/argocd.yaml"
 expect_ok "generate with prune override" "$d/scripts/generate" prod-workload-east-1
 expect_eq "prune override keeps other defaults" '{"enabled":true,"prune":false,"selfHeal":true}' \
-  "$(yq -p=json -o=json -I=0 .sync.automated "$d/apps/logging/clusters/prod-workload-east-1/argocd.json")"
+  "$(sync_with_defaults <"$d/apps/logging/clusters/prod-workload-east-1/argocd.yaml" | yq -p=json -o=json -I=0 .automated)"
 yq -i '.sync.automated.enabled = "no"' "$d/apps/logging/argocd.yaml"
 expect_fail "non-boolean enabled" "$d/scripts/generate" prod-workload-east-1
-expect_eq "logging@east-2 full" \
-  '{"app":"logging","cluster":"prod-workload-east-2","facets":["role/workload-prod","cluster/prod-workload-east-2"],"sync":{"automated":{"enabled":true,"prune":true,"selfHeal":true},"wave":"10"}}' \
-  "$(cat "$ROOT/apps/logging/clusters/prod-workload-east-2/argocd.json")"
+expect_fail "lint: non-boolean enabled" "$d/scripts/lint"
+for f in "$ROOT"/apps/*/clusters/*/argocd.yaml; do
+  [[ -L $f && $(readlink "$f") == ../../argocd.yaml ]] || fail "${f#"$ROOT"/} isn't a symlink to ../../argocd.yaml"
+done
+[[ -z $(ls "$ROOT"/apps/*/clusters/*/argocd.json 2>/dev/null) ]] || fail "overlays still have argocd.json"
 
 t T8 "removing an app's last matching facet removes its joins"
 d=$(copy_repo)
@@ -182,7 +189,7 @@ expect_ok "new-cluster on gcp" "$d/scripts/new-cluster" qa-workload-west-1 --fro
 expect_ok "generate qa-workload-west-1" "$d/scripts/generate" qa-workload-west-1
 expect_ok "lint: platform/gcp valid once a cluster has it" "$d/scripts/lint"
 expect_eq "platform/gcp used" "role/workload-qa,platform/gcp" \
-  "$(yq -p=json -o=yaml -r '.facets | join(",")' "$d/apps/logging/clusters/qa-workload-west-1/argocd.json")"
+  "$(facets_of "$d" logging qa-workload-west-1)"
 
 t T10b "lint catches overlays that generate would change"
 stale() { # <description> <expected lint message> <setup...>
@@ -204,9 +211,9 @@ stale "facet selects a new cluster" \
 stale "last matching facet removed" \
   "apps/gpu-operator/clusters/prod-workload-east-2: no facet of gpu-operator matches" \
   eval 'rm -r "$d/apps/gpu-operator/facets/platform/baremetal"'
-stale "argocd.yaml changed" \
-  "apps/logging/clusters/prod-workload-east-1/argocd.json: out of date" \
-  eval 'yq -i ".sync.wave = \"11\"" "$d/apps/logging/argocd.yaml"'
+stale "argocd.yaml copied instead of linked" \
+  "apps/logging/clusters/prod-workload-east-1/argocd.yaml: must be a symlink to ../../argocd.yaml" \
+  eval 'cp --remove-destination "$d/apps/logging/argocd.yaml" "$d/apps/logging/clusters/prod-workload-east-1/argocd.yaml"'
 stale "cluster removed" \
   "apps/logging/clusters/prod-workload-east-1: cluster prod-workload-east-1 doesn't exist" \
   eval 'rm -r "$d/clusters/prod-workload-east-1"'
@@ -251,9 +258,10 @@ expect_ok "two overlays" "$S/render" "$ROOT/apps/logging/clusters/prod-workload-
 expect_eq "both routes" "grafana.apps.hub1.example.com logging.apps.east1.example.com" \
   "$(yq -r 'select(.kind == "Route") | .spec.host' "$LOG" | grep -v '^---$' | sort | paste -sd' ' -)"
 expect_ok "render -o" "$S/render" -o "$OUT/o" "$ROOT/apps/logging/clusters/prod-workload-east-1/" "$ROOT/tenants/team-a/clusters/prod-workload-east-2"
-for f in prod-workload-east-1/logging.yaml prod-workload-east-1/logging.argocd.json prod-workload-east-2/tenant-team-a.yaml; do
+for f in prod-workload-east-1/logging.yaml prod-workload-east-2/tenant-team-a.yaml; do
   [[ -s $OUT/o/$f ]] || fail "render -o didn't write $f"
 done
+[[ -z $(find "$OUT/o" -name '*.json') ]] || fail "render -o wrote Argo CD settings"
 expect_fail "render -o with an unnamed overlay" "$S/render" -o "$OUT/o" "$ROOT/apps/logging/facets/per-cluster"
 grep -q "can't name output" "$LOG" || fail "render doesn't explain: $(cat "$LOG")"
 expect_ok "just render (every app overlay)" just --justfile "$ROOT/justfile" render
@@ -279,7 +287,8 @@ expect_eq "kinds" "ApplicationSet" "$(yq -r .kind "$LOG" | grep -v '^---$' | sor
 yq 'select(.metadata.name == "cluster-config")' "$LOG" >"$a"
 expect_eq "generator revision (default)" "main" "$(yq -r '.spec.generators[0].git.revision' "$a")"
 expect_eq "targetRevision (default)" "main" "$(yq -r .spec.template.spec.source.targetRevision "$a")"
-expect_eq "generator path" "apps/*/clusters/prod-workload-east-1/argocd.json" "$(yq -r '.spec.generators[0].git.files[0].path' "$a")"
+expect_eq "generator path" "apps/*/clusters/prod-workload-east-1/argocd.yaml" "$(yq -r '.spec.generators[0].git.files[0].path' "$a")"
+expect_eq "Application named after the app (path segment 1)" "{{index .path.segments 1}}" "$(yq -r .spec.template.metadata.name "$a")"
 expect_eq "destination" "https://kubernetes.default.svc" "$(yq -r .spec.template.spec.destination.server "$a")"
 expect_ok "kustomize build clusters/prod-workload-east-2/argocd" kustomize build "$ROOT/clusters/prod-workload-east-2/argocd"
 cp "$LOG" "$OUT/appsets-east2.yaml"
@@ -288,8 +297,12 @@ expect_eq "prod-workload-east-2 ApplicationSets" "cluster-config tenant-config" 
 expect_ok "kustomize build clusters/prod-hub-east-1/argocd" kustomize build "$ROOT/clusters/prod-hub-east-1/argocd"
 expect_eq "hub ApplicationSets" "cluster-config" \
   "$(yq -r 'select(.kind == "ApplicationSet") | .metadata.name' "$LOG" | grep -v -e '^---$' -e '^$' | paste -sd' ' -)"
-expect_eq "tenant generator path" "tenants/*/clusters/prod-workload-east-2/argocd.json" \
-  "$(yq -r 'select(.metadata.name == "tenant-config") | .spec.generators[0].git.files[0].path' "$OUT/appsets-east2.yaml")"
+expect_eq "tenant generator directories" "tenants/*/clusters/prod-workload-east-2" \
+  "$(yq -r 'select(.metadata.name == "tenant-config") | .spec.generators[0].git.directories[0].path' "$OUT/appsets-east2.yaml" | grep -v -e '^---$' -e '^$')"
+expect_eq "tenant Application name" "tenant-{{index .path.segments 1}}" \
+  "$(yq -r 'select(.metadata.name == "tenant-config") | .spec.template.metadata.name' "$OUT/appsets-east2.yaml" | grep -v -e '^---$' -e '^$')"
+expect_eq "tenant sync settings" '{"enabled":true,"prune":false,"selfHeal":true} 30' \
+  "$(yq -r 'select(.metadata.name == "tenant-config") | (.spec.template.spec.syncPolicy.automated | to_json(0)) + " " + .spec.template.metadata.annotations["argocd.argoproj.io/sync-wave"]' "$OUT/appsets-east2.yaml" | grep -v -e '^---$' -e '^$')"
 expect_eq "tenant revision (default)" "main main" \
   "$(yq -r 'select(.metadata.name == "tenant-config") | [.spec.generators[0].git.revision, .spec.template.spec.source.targetRevision] | join(" ")' "$OUT/appsets-east2.yaml" | grep -v -e '^---$' -e '^$')"
 # Render templatePatch for a params file as the Go template would: dig returns the value if the
@@ -308,7 +321,7 @@ render_patch() { # <params-json>
   echo "$patch" | yq -o=json -I=0 .spec.syncPolicy.automated
 }
 expect_eq "templatePatch syncPolicy" '{"enabled":false,"prune":true,"selfHeal":true}' \
-  "$(render_patch "$ROOT/apps/monitoring/clusters/prod-workload-east-2/argocd.json")"
+  "$(yq -o=json '.' "$ROOT/apps/monitoring/clusters/prod-workload-east-2/argocd.yaml" >"$OUT/monitoring.json"; render_patch "$OUT/monitoring.json")"
 echo '{"sync":{"automated":{"prune":false}}}' >"$OUT/partial.json"
 expect_eq "templatePatch defaults" '{"enabled":true,"prune":false,"selfHeal":true}' "$(render_patch "$OUT/partial.json")"
 
@@ -354,18 +367,19 @@ expect_eq "team-a quota override" "16" "$(kind_field "$LOG" ResourceQuota '.spec
 expect_ok "render team-b on prod-workload-east-2" kustomize build "$ROOT/tenants/team-b/clusters/prod-workload-east-2"
 expect_eq "team-b quota" "4" "$(kind_field "$LOG" ResourceQuota '.spec.hard["requests.cpu"]')"
 expect_ok "render -o tenants" "$S/render" -o "$OUT/rendered" "$ROOT"/tenants/*/clusters/*
-[[ -s $OUT/rendered/prod-workload-east-2/tenant-team-a.yaml && -s $OUT/rendered/prod-workload-east-2/tenant-team-a.argocd.json ]] \
+[[ -s $OUT/rendered/prod-workload-east-2/tenant-team-a.yaml ]] \
   || fail "render -o didn't render tenants"
 d=$(copy_repo)
-echo '{"cluster":"prod-workload-east-2","sync":{"wave":30},"tenant":"team-b"}' >"$d/tenants/team-b/clusters/prod-workload-east-2/argocd.json"
-expect_fail "lint rejects a non-string wave" "$d/scripts/lint"
+echo '{}' >"$d/tenants/team-b/clusters/prod-workload-east-2/argocd.json"
+expect_fail "lint rejects a tenant argocd.json" "$d/scripts/lint"
+grep -q "tenants/team-b/clusters/prod-workload-east-2/argocd.json: not used" "$LOG" || fail "lint doesn't explain: $(cat "$LOG")"
 d=$(copy_repo)
-mkdir -p "$d/tenants/team-b/clusters/nope" && echo '{}' >"$d/tenants/team-b/clusters/nope/argocd.json"
+mkdir -p "$d/tenants/team-b/clusters/nope" && cp "$d/tenants/team-b/clusters/prod-workload-east-2/kustomization.yaml" "$d/tenants/team-b/clusters/nope/"
 expect_fail "lint rejects an unknown cluster" "$d/scripts/lint"
+grep -q "tenants/team-b/clusters/nope: no cluster named 'nope'" "$LOG" || fail "lint doesn't explain: $(cat "$LOG")"
 
 t T18 "facet selection"
-aj_in() { yq -p=json -o=yaml -r "$4" "$1/apps/$2/clusters/$3/argocd.json"; }
-facets_of() { aj_in "$1" "$2" "$3" '.facets | join(",")'; }
+
 empty_facet() { # <repo> <app> <facet>
   mkdir -p "$1/apps/$2/facets/$3"
   printf 'apiVersion: kustomize.config.k8s.io/v1alpha1\nkind: Component\nresources: []\n' >"$1/apps/$2/facets/$3/kustomization.yaml"
@@ -387,7 +401,7 @@ expect_ok "generate" "$d/scripts/generate"
 expect_eq "every matching facet, in order" \
   "../../../../clusters/prod-workload-east-2/facts ../../facets/environment/prod ../../facets/role/workload ../../facets/role/workload-prod ../../facets/topology/compact ../../facets/topology/compact-prod ../../facets/region/us-east-2 ../../facets/region/us-east-2-prod ../../facets/platform/baremetal ../../facets/platform/baremetal-prod ../../facets/per-cluster ../../facets/cluster/prod-workload-east-2" \
   "$(yq -r '.components | join(" ")' "$d/apps/logging/clusters/prod-workload-east-2/kustomization.yaml")"
-expect_eq "argocd.json facets" \
+expect_eq "facets, as whatruns lists them" \
   "environment/prod,role/workload,role/workload-prod,topology/compact,topology/compact-prod,region/us-east-2,region/us-east-2-prod,platform/baremetal,platform/baremetal-prod,cluster/prod-workload-east-2" \
   "$(facets_of "$d" logging prod-workload-east-2)"
 expect_eq "role/workload reaches qa too" "role/workload,role/workload-qa" "$(facets_of "$d" logging qa-workload-east-1)"

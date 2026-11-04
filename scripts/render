@@ -12,8 +12,8 @@ Usage: scripts/render [-o <outdir>] <overlay-dir>...
 Runs kustomize build on each cluster overlay (e.g. apps/<app>/clusters/<cluster>) and prints
 the results to stdout, separated by '---'. With -o, writes each to
 <outdir>/<cluster>/<app>.yaml (tenants/<tenant>/clusters/<cluster>: tenant-<tenant>.yaml)
-instead, with its argocd.json copied alongside as .argocd.json. Extra kustomize flags can be
-passed in \$KUSTOMIZE_BUILD_OPTIONS.
+instead. Only manifests are rendered, not Argo CD settings. Extra kustomize flags can be passed
+in \$KUSTOMIZE_BUILD_OPTIONS.
 USAGE
 }
 
@@ -47,5 +47,4 @@ for dir in "${dirs[@]}"; do
   mkdir -p "$out/$cluster"
   # shellcheck disable=SC2086
   kustomize build ${KUSTOMIZE_BUILD_OPTIONS:-} "$dir" >"$out/$cluster/$name.yaml" || die "kustomize build failed for $dir"
-  [[ ! -f $dir/argocd.json ]] || cp "$dir/argocd.json" "$out/$cluster/$name.argocd.json"
 done

@@ -1,1 +1,0 @@
-{"app":"monitoring","cluster":"prod-hub-east-1","facets":["environment/prod"],"sync":{"automated":{"enabled":false,"prune":true,"selfHeal":true},"wave":"20"}}

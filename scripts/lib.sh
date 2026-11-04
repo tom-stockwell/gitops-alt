@@ -124,17 +124,9 @@ join_kustomization() {
   [[ -z $last ]] || echo "- ../../facets/$last"
 }
 
-# join_argocd_json <app> <cluster> <sync-json> <facet...>: the generated argocd.json.
-join_argocd_json() {
-  local app=$1 c=$2 sync=$3
-  shift 3
-  APP=$app CLUSTER=$c SYNC=$sync FACETS=$(printf '%s\n' "$@") yq -n -o=json -I=0 '{
-      "app": strenv(APP),
-      "cluster": strenv(CLUSTER),
-      "facets": (strenv(FACETS) | split("\n")),
-      "sync": (env(SYNC) | .wave |= tostring)
-    } | sort_keys(..)'
-}
+# ARGOCD_LINK: each overlay's argocd.yaml is a symlink to its app's argocd.yaml. The ApplicationSet's
+# git generator reads it, so an Application exists per overlay and gets the app's settings.
+ARGOCD_LINK=../../argocd.yaml
 
 # list_apps: app names (dirs under apps/), sorted.
 list_apps() {
@@ -146,10 +138,24 @@ list_apps() {
 
 # resolve_sync <app>: built-in defaults deep-merged with apps/<app>/argocd.yaml sync, as compact JSON.
 resolve_sync() {
-  local app=$1 defaults="$ROOT/apps/$1/argocd.yaml"
-  [[ -f $defaults ]] || die "apps/$app/argocd.yaml not found"
-  DFILE=$defaults yq -n -o=json -I=0 \
-    '{"automated": {"enabled": true, "prune": true, "selfHeal": true}} * (load(strenv(DFILE)).sync // {})'
+  local f="$ROOT/apps/$1/argocd.yaml"
+  [[ -f $f ]] || die "apps/$1/argocd.yaml not found"
+  sync_with_defaults <"$f"
+}
+
+# sync_with_defaults < argocd.yaml: its sync deep-merged over the built-in defaults (the same defaults
+# the ApplicationSet's templatePatch applies), as compact JSON.
+sync_with_defaults() {
+  yq -o=json -I=0 '{"automated": {"enabled": true, "prune": true, "selfHeal": true}} * (.sync // {})'
+}
+
+# sync_valid <sync-json>: true if automated.{enabled,prune,selfHeal} are booleans and wave is set.
+sync_valid() {
+  SYNC=$1 yq -e -n 'env(SYNC) | [
+      (.automated.enabled | tag) == "!!bool",
+      (.automated.prune | tag) == "!!bool",
+      (.automated.selfHeal | tag) == "!!bool",
+      .wave != null] | all' >/dev/null 2>&1
 }
 
 # env_keys <file>: keys of a KEY=value file (kustomize envs format), in order.

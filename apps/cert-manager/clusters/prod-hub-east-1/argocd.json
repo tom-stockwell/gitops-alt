@@ -1,1 +1,0 @@
-{"app":"cert-manager","cluster":"prod-hub-east-1","facets":["environment/prod"],"sync":{"automated":{"enabled":true,"prune":true,"selfHeal":true},"wave":"0"}}

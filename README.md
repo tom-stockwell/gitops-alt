@@ -25,7 +25,7 @@ apps/<app>/
     <key>/<value>[-<env>]/ key is environment, role, topology, region or platform
     per-cluster/           the app's replacements from cluster facts (optional)
     cluster/<cluster>/     one-off exception for one cluster (should rarely exist)
-  clusters/<cluster>/      GENERATED join + resolved argocd.json — never edit
+  clusters/<cluster>/      GENERATED join + argocd.yaml symlink to ../../argocd.yaml — never edit
 clusters/<cluster>/
   facts/                   Component (identical for every cluster) + facts.yaml: name, domain,
                            environment, role, topology, region, platform; local-config, never emitted
@@ -140,8 +140,8 @@ Lint checks facets against the facts the clusters actually have:
 - **Warning:** a valid facet no single cluster matches, e.g. `role/hub-qa` while there's no qa hub.
   The same goes for a component no facet uses.
 - **Error:** a cluster overlay that doesn't match the facets, i.e. `just generate` wasn't run. That
-  covers an overlay that's missing, one that should be gone, or one whose components or
-  `argocd.json` differ from what generate would write.
+  covers an overlay that's missing, one that should be gone, one whose components differ from
+  what generate would write, or one whose `argocd.yaml` isn't the symlink.
 
 `just generate` also deletes overlays nothing selects any more, including all overlays of a
 deleted cluster.
@@ -161,12 +161,14 @@ Argo CD settings are set per app only, in `apps/<app>/argocd.yaml`, and are the 
 cluster the app runs on. Facets can't change them (lint rejects an `argocd.yaml` in a
 facet). On top of built-in defaults (`sync.automated.enabled`, `prune` and `selfHeal` all
 `true`), `argocd.yaml` sets `sync.wave` (required) and optionally `sync.automated.*`, e.g.
-`sync: {automated: {enabled: false}}` for manual sync.
+`sync: {automated: {enabled: false}}` for manual sync. Lint checks the types.
 
-The result is written to `apps/<app>/clusters/<cluster>/argocd.json` (app, cluster, the
-matching facets, sync), which the ApplicationSet reads. Every key is always present in that
-file, so every Application gets the full `spec.syncPolicy.automated` block with explicit
-`enabled`, `prune` and `selfHeal`.
+Each cluster overlay has `argocd.yaml` as a symlink to `../../argocd.yaml`. The ApplicationSet's
+git generator reads `apps/*/clusters/<cluster>/argocd.yaml`, so there's one Application per
+overlay, named after the app (path segment 1), with the app's settings. Its `templatePatch`
+fills in the defaults, so every Application gets the full `spec.syncPolicy.automated` block
+with explicit `enabled`, `prune` and `selfHeal`. The settings aren't part of the rendered
+manifests (`just render`, `just diff`); `just whatruns` shows them per cluster.
 
 ## Which commit a cluster runs
 
