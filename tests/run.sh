@@ -148,14 +148,66 @@ d=$(copy_repo)
 echo 'sync: {wave: "5"}' >"$d/apps/logging/facets/role/workload-prod/argocd.yaml"
 expect_fail "lint: argocd.yaml in a facet" "$d/scripts/lint"
 grep -q "Argo CD settings are only set in apps/logging/argocd.yaml" "$LOG" || fail "lint doesn't explain: $(cat "$LOG")"
+component_at() { # <dir>
+  mkdir -p "$1" && printf 'apiVersion: kustomize.config.k8s.io/v1alpha1\nkind: Component\nresources: []\n' >"$1/kustomization.yaml"
+}
 d=$(copy_repo)
-for f in role/workload-staging environment/prod-prod platform/gcp cluster/prod-nope-east-9 nope; do
-  mkdir -p "$d/apps/logging/facets/$f" && cp "$d/apps/cert-manager/facets/environment/qa/kustomization.yaml" "$d/apps/logging/facets/$f/"
+for f in role/hub-qa topology/sno-prod; do component_at "$d/apps/logging/facets/$f"; done
+component_at "$d/apps/logging/components/unused"
+expect_ok "lint: valid but unused facets and components" "$d/scripts/lint"
+for f in facets/role/hub-qa facets/topology/sno-prod; do
+  grep -q "apps/logging/$f: no cluster matches it (valid, but unused)" "$LOG" || fail "lint doesn't warn about $f: $(cat "$LOG")"
 done
-expect_ok "lint: facets matching no cluster" "$d/scripts/lint"
-for f in role/workload-staging environment/prod-prod platform/gcp cluster/prod-nope-east-9 nope; do
-  grep -q "apps/logging/facets/$f: matches no cluster" "$LOG" || fail "lint doesn't warn about $f: $(cat "$LOG")"
+grep -q "apps/logging/components/unused: not used by any facet" "$LOG" || fail "lint doesn't warn about the unused component: $(cat "$LOG")"
+for f in nope environment/prod-prod platform/gcp role/workload-staging cluster/prod-workload-west-9 cluster/prod-workload-east-2-prod; do
+  d=$(copy_repo)
+  component_at "$d/apps/logging/facets/$f"
+  expect_fail "lint rejects facets/$f" "$d/scripts/lint"
+  grep -qE "apps/logging/facets/$f: (invalid facet|not allowed)" "$LOG" || fail "lint doesn't explain facets/$f: $(cat "$LOG")"
 done
+grep -q "known platform: aws,baremetal" <(d=$(copy_repo); component_at "$d/apps/logging/facets/platform/gcp"; "$d/scripts/lint" 2>&1) \
+  || fail "lint doesn't list the known values"
+for f in README role/kustomization.yaml; do
+  d=$(copy_repo)
+  touch "$d/apps/logging/facets/$f"
+  expect_fail "lint rejects the file facets/$f" "$d/scripts/lint"
+  grep -q "apps/logging/facets/$f: not allowed" "$LOG" || fail "lint doesn't explain facets/$f: $(cat "$LOG")"
+done
+d=$(copy_repo)
+component_at "$d/apps/logging/facets/platform/gcp"
+expect_ok "new-cluster on gcp" "$d/scripts/new-cluster" qa-workload-west-1 --from qa-workload-east-1 --platform gcp
+expect_ok "lint: platform/gcp valid once a cluster has it" "$d/scripts/lint"
+expect_eq "platform/gcp used" "role/workload-qa,platform/gcp" \
+  "$(yq -p=json -o=yaml -r '.facets | join(",")' "$d/apps/logging/clusters/qa-workload-west-1/argocd.json")"
+
+t T10b "lint catches overlays that generate would change"
+stale() { # <description> <expected lint message> <setup...>
+  local desc=$1 msg=$2
+  shift 2
+  d=$(copy_repo)
+  "$@"
+  expect_fail "lint: $desc" "$d/scripts/lint"
+  grep -qF "$msg" "$LOG" || fail "lint doesn't explain ($desc): $(cat "$LOG")"
+  expect_ok "generate ($desc)" "$d/scripts/generate"
+  expect_ok "lint after generate ($desc)" "$d/scripts/lint"
+}
+stale "facet added to existing overlays" \
+  "apps/logging/clusters/prod-workload-east-1/kustomization.yaml: out of date (expected components: role/workload-prod platform/aws per-cluster)" \
+  eval 'component_at "$d/apps/logging/facets/platform/aws"'
+stale "facet selects a new cluster" \
+  "apps/gpu-operator/clusters/prod-hub-east-1: missing" \
+  eval 'component_at "$d/apps/gpu-operator/facets/role/hub"'
+stale "last matching facet removed" \
+  "apps/gpu-operator/clusters/prod-workload-east-2: no facet of gpu-operator matches" \
+  eval 'rm -r "$d/apps/gpu-operator/facets/platform/baremetal"'
+stale "argocd.yaml changed" \
+  "apps/logging/clusters/prod-workload-east-1/argocd.json: out of date" \
+  eval 'yq -i ".sync.wave = \"11\"" "$d/apps/logging/argocd.yaml"'
+stale "cluster removed" \
+  "apps/logging/clusters/prod-workload-east-1: cluster prod-workload-east-1 doesn't exist" \
+  eval 'rm -r "$d/clusters/prod-workload-east-1"'
+[[ ! -e $d/apps/logging/clusters/prod-workload-east-1 && ! -e $d/apps/cert-manager/clusters/prod-workload-east-1 ]] \
+  || fail "generate didn't remove a deleted cluster's overlays"
 
 t T11 "new-cluster"
 d=$(copy_repo)

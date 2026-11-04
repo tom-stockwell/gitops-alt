@@ -30,24 +30,10 @@ err() { errors+=("$*"); }
 
 mapfile -t clusters < <(list_clusters)
 
-# Joins.
-for k in apps/*/clusters/*/kustomization.yaml; do
-  [[ -f $k ]] || continue
-  dir=$(dirname "$k")
-  c=$(basename "$dir")
-  head -n1 "$k" | grep -qF "$GENERATED_PREFIX" || err "$k: missing GENERATED header"
-  extra=$(yq -r 'keys | .[] | select(. != "apiVersion" and . != "kind" and . != "resources" and . != "components")' "$k")
-  [[ -z $extra ]] || err "$k: joins may only contain apiVersion/kind/resources/components, found: $(echo $extra)"
-  [[ $(yq -o=json -I=0 '.resources' "$k") == '["../../base"]' ]] \
-    || err "$k: resources must be exactly ../../base"
-  [[ $(yq -r '.components[0] // ""' "$k") == "../../../../clusters/$c/facts" ]] \
-    || err "$k: first component must be ../../../../clusters/$c/facts"
-  bad=$(yq -r '.components[1:] | .[] | select(test("^\.\./\.\./facets/[^/]+(/[^/]+)?$") | not)' "$k")
-  [[ -z $bad ]] || err "$k: components after the facts must be ../../facets/<facet>, found: $(echo $bad)"
-done
-
 # Cluster dirs.
-declare -A canonical=() has_appset=() facet_names=()
+# known[<key>/<value>]: facet facts some cluster has; matched[<facet>]: facets some cluster
+# matches; facts_ok[<cluster>]: every facet fact is set, so its overlays can be checked.
+declare -A canonical=() has_appset=() known=() matched=() facts_ok=()
 is_git=false
 git rev-parse --git-dir >/dev/null 2>&1 && is_git=true
 mapfile -t appsets < <(appset_names)
@@ -84,11 +70,13 @@ for c in "${clusters[@]}"; do
     fi
     [[ $(yq -r '.metadata.annotations["config.kubernetes.io/local-config"] // ""' "$d/facts/facts.yaml") == "true" ]] \
       || err "$d/facts/facts.yaml: missing annotation config.kubernetes.io/local-config: \"true\""
-    if [[ -n $envname ]]; then
-      facet_names[environment/$envname]=1
-      for k in "${FACET_KEYS[@]:1}"; do
-        [[ -n ${fact[$k]} ]] && facet_names[$k/${fact[$k]}]=1 facet_names[$k/${fact[$k]}-$envname]=1
-      done
+    complete=true
+    for k in "${FACET_KEYS[@]}"; do
+      if [[ -n ${fact[$k]} ]]; then known[$k/${fact[$k]}]=1; else complete=false; fi
+    done
+    if $complete; then
+      facts_ok[$c]=1
+      while IFS= read -r f; do matched[$f]=1; done < <(cluster_facets "$c")
     fi
     unset fact
   fi
@@ -162,6 +150,14 @@ for j in tenants/*/clusters/*/argocd.json; do
     || err "$j: needs sync.wave as a string; sync.automated values must be booleans"
 done
 
+# known_values <key>: the values clusters have for a facet fact, comma-separated.
+known_values() {
+  local kv
+  for kv in "${!known[@]}"; do
+    if [[ $kv == "$1/"* ]]; then echo "${kv#*/}"; fi
+  done | LC_ALL=C sort | paste -sd, -
+}
+
 # App dirs.
 for d in apps/*/; do
   d=${d%/}
@@ -175,35 +171,56 @@ for d in apps/*/; do
       *) err "$e: not allowed; an app has only argocd.yaml, base/, components/, facets/ and clusters/" ;;
     esac
   done
-  # Every Component dir under facets/: <key>/<value>, cluster/<cluster>, or per-cluster.
+  # Every Component dir under facets/: <key>/<value>[-<env>], cluster/<cluster>, or per-cluster.
+  # A facet is valid if the clusters' facts could produce it; valid but unmatched only warns.
   facet_dirs=()
-  for e in "$d"/facets/*/; do
-    [[ -d $e ]] || continue
-    e=${e%/}
+  for e in "$d"/facets/*; do
+    [[ -e $e ]] || continue
     name=$(basename "$e")
-    if [[ $name == "$CLUSTER_FACET" ]]; then
-      for v in "$e"/*/; do
-        [[ -d $v ]] || continue
-        v=${v%/}
+    if [[ ! -d $e ]]; then
+      err "$e: not allowed; facets/ holds only ${FACET_KEYS[*]} $CLUSTER_FACET $PER_CLUSTER_FACET"
+    elif [[ $name == "$PER_CLUSTER_FACET" ]]; then
+      facet_dirs+=("$e")
+    elif [[ $name == "$CLUSTER_FACET" ]] || printf '%s\n' "${FACET_KEYS[@]}" | grep -qxF "$name"; then
+      for v in "$e"/*; do
+        [[ -e $v ]] || continue
+        if [[ ! -d $v ]]; then
+          err "$v: not allowed; facets/$name/ holds only <value>/ directories, each a Component"
+          continue
+        fi
         facet_dirs+=("$v")
-        if [[ -d clusters/$(basename "$v") ]]; then
-          warnings+=("$v: cluster facet (one-off exception)")
-        else
-          warnings+=("$v: matches no cluster (no cluster named $(basename "$v"))")
+        val=$(basename "$v")
+        if [[ $name == "$CLUSTER_FACET" ]]; then
+          if [[ -d clusters/$val ]]; then
+            warnings+=("$v: cluster facet (one-off exception)")
+          else
+            err "$v: invalid facet: no cluster named $val"
+          fi
+          continue
+        fi
+        valid=false
+        if [[ -n ${known[$name/$val]:-} ]]; then
+          valid=true
+        elif [[ $name != environment ]]; then
+          # <value>-<environment>, for a value and an environment some cluster has.
+          for kv in "${!known[@]}"; do
+            [[ $kv == "$name/"* ]] || continue
+            base=${kv#*/}
+            [[ $val == "$base-"* && -n ${known[environment/${val#"$base-"}]:-} ]] && { valid=true; break; }
+          done
+        fi
+        if ! $valid; then
+          if [[ $name == environment ]]; then
+            err "$v: invalid facet: no cluster has environment $val (known: $(known_values environment))"
+          else
+            err "$v: invalid facet: no cluster has $name $val, and it isn't <$name>-<environment> (known $name: $(known_values "$name"); environments: $(known_values environment))"
+          fi
+        elif [[ -z ${matched[$name/$val]:-} ]]; then
+          warnings+=("$v: no cluster matches it (valid, but unused)")
         fi
       done
-    elif printf '%s\n' "${FACET_KEYS[@]}" | grep -qxF "$name"; then
-      for v in "$e"/*/; do
-        [[ -d $v ]] || continue
-        v=${v%/}
-        facet_dirs+=("$v")
-        [[ -n ${facet_names[$name/$(basename "$v")]:-} ]] \
-          || warnings+=("$v: matches no cluster (no cluster has $name: $(basename "$v")$([[ $name == environment ]] || echo ", with or without an -<environment> suffix"))")
-      done
     else
-      facet_dirs+=("$e")
-      [[ $name == "$PER_CLUSTER_FACET" ]] \
-        || warnings+=("$e: matches no cluster (facets/ holds ${FACET_KEYS[*]}, $CLUSTER_FACET and $PER_CLUSTER_FACET)")
+      err "$e: not allowed; facets/ holds only ${FACET_KEYS[*]} $CLUSTER_FACET $PER_CLUSTER_FACET"
     fi
   done
   for f in "${facet_dirs[@]+"${facet_dirs[@]}"}"; do
@@ -228,6 +245,36 @@ for d in apps/*/; do
     [[ -n ${used[$(realpath -m "$comp")]:-} ]] || warnings+=("$comp: not used by any facet")
   done
   unset used
+done
+
+# Cluster overlays: each must be exactly what scripts/generate writes for the app's facets, and
+# exist exactly when some facet matches the cluster.
+mapfile -t all_apps < <(list_apps)
+for app in "${all_apps[@]}"; do
+  sync=$(resolve_sync "$app" 2>/dev/null) || continue   # missing argocd.yaml is reported above
+  for c in "${clusters[@]}"; do
+    [[ -n ${facts_ok[$c]:-} ]] || continue
+    out=apps/$app/clusters/$c
+    mapfile -t facets < <(app_facets "$app" "$c")
+    if [[ ${#facets[@]} -eq 0 ]]; then
+      [[ ! -e $out ]] || err "$out: no facet of $app matches $c any more; run make generate"
+      continue
+    fi
+    if [[ ! -d $out ]]; then
+      err "$out: missing; $app's facets $(printf '%s\n' "${facets[@]}" | paste -sd, -) match $c; run make generate"
+      continue
+    fi
+    head -n1 "$out/kustomization.yaml" 2>/dev/null | grep -qF "$GENERATED_PREFIX" \
+      || err "$out/kustomization.yaml: missing GENERATED header"
+    cmp -s <(join_kustomization "$app" "$c" "${facets[@]}") "$out/kustomization.yaml" \
+      || err "$out/kustomization.yaml: out of date (expected components: $(join_kustomization "$app" "$c" "${facets[@]}" | sed -n '/^components:/,$ s|^- \.\./\.\./facets/||p' | paste -sd' ' -)); run make generate"
+    cmp -s <(join_argocd_json "$app" "$c" "$sync" "${facets[@]}") "$out/argocd.json" \
+      || err "$out/argocd.json: out of date; run make generate"
+  done
+done
+for dir in apps/*/clusters/*/; do
+  [[ -d $dir ]] || continue
+  [[ -d clusters/$(basename "$dir") ]] || err "${dir%/}: cluster $(basename "$dir") doesn't exist; run make generate"
 done
 
 for w in "${warnings[@]+"${warnings[@]}"}"; do warn "$w"; done

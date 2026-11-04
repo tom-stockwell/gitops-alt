@@ -131,7 +131,20 @@ Components in a cluster overlay, in order (later wins):
 So key order is precedence: `topology/compact` (monitoring without HA) overrides
 `environment/prod` (monitoring with HA) on prod-workload-east-2.
 
-Lint warns about facets that match no cluster (usually a typo, or a value no cluster has yet).
+Lint checks facets against the facts the clusters actually have:
+
+- **Error:** an invalid facet: a value no cluster has (`platform/gcp` with no gcp cluster), a
+  suffix that isn't an environment any cluster has (`role/workload-staging`), a `cluster/<name>`
+  for a cluster that doesn't exist, or anything else under `facets/` (unknown keys, stray files).
+  Add the cluster first, then its facets.
+- **Warning:** a valid facet no single cluster matches, e.g. `role/hub-qa` while there's no qa hub.
+  The same goes for a component no facet uses.
+- **Error:** a cluster overlay that doesn't match the facets, i.e. `make generate` wasn't run. That
+  covers an overlay that's missing, one that should be gone, or one whose components or
+  `argocd.json` differ from what generate would write.
+
+`make generate` also deletes overlays nothing selects any more, including all overlays of a
+deleted cluster.
 
 ### Components
 

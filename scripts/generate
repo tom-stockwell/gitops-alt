@@ -137,33 +137,8 @@ for c in "${clusters[@]}"; do
     out=$ROOT/apps/$app/clusters/$c
     mkdir -p "$out"
     mapfile -t facets <"$work/$c.$app.facets"
-    # Order: facts ConfigMap; the matched facets in cluster_facets order; per-cluster (the app's
-    # replacements from the facts, so they fill placeholders any facet adds); the cluster
-    # facet last, so it can override anything.
-    components=(../../../../clusters/$c/facts)
-    for f in "${facets[@]}"; do
-      [[ $f == "$CLUSTER_FACET/$c" ]] || components+=("../../facets/$f")
-    done
-    [[ -d $ROOT/apps/$app/facets/$PER_CLUSTER_FACET ]] && components+=("../../facets/$PER_CLUSTER_FACET")
-    [[ ${facets[-1]} == "$CLUSTER_FACET/$c" ]] && components+=("../../facets/$CLUSTER_FACET/$c")
-    {
-      echo "$GENERATED_PREFIX for clusters/$c — DO NOT EDIT."
-      echo "apiVersion: kustomize.config.k8s.io/v1beta1"
-      echo "kind: Kustomization"
-      echo "resources:"
-      echo "- ../../base"
-      echo "components:"
-      printf -- '- %s\n' "${components[@]}"
-    } >"$out/kustomization.yaml"
-    APP=$app CLUSTER=$c \
-    FACETS=$(printf '%s\n' "${facets[@]}") \
-    SYNC=$(cat "$work/$c.$app.sync.json") \
-      yq -n -o=json -I=0 '{
-        "app": strenv(APP),
-        "cluster": strenv(CLUSTER),
-        "facets": (strenv(FACETS) | split("\n")),
-        "sync": (env(SYNC) | .wave |= tostring)
-      } | sort_keys(..)' >"$out/argocd.json"
+    join_kustomization "$app" "$c" "${facets[@]}" >"$out/kustomization.yaml"
+    join_argocd_json "$app" "$c" "$(cat "$work/$c.$app.sync.json")" "${facets[@]}" >"$out/argocd.json"
     echo "wrote apps/$app/clusters/$c"
   done
 done

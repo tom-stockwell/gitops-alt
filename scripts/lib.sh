@@ -102,6 +102,40 @@ app_facets() {
   return 0
 }
 
+# join_kustomization <app> <cluster> <facet...>: the generated kustomization.yaml for the app's
+# overlay on the cluster, given its matched facets (app_facets). Component order: the facts
+# ConfigMap; the facets in cluster_facets order; per-cluster (the app's replacements from the
+# facts, so they fill placeholders any facet adds); the cluster facet last, so it can override
+# anything.
+join_kustomization() {
+  local app=$1 c=$2 f last=""
+  shift 2
+  echo "$GENERATED_PREFIX for clusters/$c — DO NOT EDIT."
+  echo "apiVersion: kustomize.config.k8s.io/v1beta1"
+  echo "kind: Kustomization"
+  echo "resources:"
+  echo "- ../../base"
+  echo "components:"
+  echo "- ../../../../clusters/$c/facts"
+  for f in "$@"; do
+    if [[ $f == "$CLUSTER_FACET/$c" ]]; then last=$f; else echo "- ../../facets/$f"; fi
+  done
+  [[ ! -d $ROOT/apps/$app/facets/$PER_CLUSTER_FACET ]] || echo "- ../../facets/$PER_CLUSTER_FACET"
+  [[ -z $last ]] || echo "- ../../facets/$last"
+}
+
+# join_argocd_json <app> <cluster> <sync-json> <facet...>: the generated argocd.json.
+join_argocd_json() {
+  local app=$1 c=$2 sync=$3
+  shift 3
+  APP=$app CLUSTER=$c SYNC=$sync FACETS=$(printf '%s\n' "$@") yq -n -o=json -I=0 '{
+      "app": strenv(APP),
+      "cluster": strenv(CLUSTER),
+      "facets": (strenv(FACETS) | split("\n")),
+      "sync": (env(SYNC) | .wave |= tostring)
+    } | sort_keys(..)'
+}
+
 # list_apps: app names (dirs under apps/), sorted.
 list_apps() {
   local d
